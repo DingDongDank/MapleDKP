@@ -51,7 +51,8 @@ local DEFAULT_BOSSES = {
     ["21212"] = { name = "Lady Vashj", amount = 20, zone = "Serpentshrine Cavern", encounterOrder = 4 },
     ["19514"] = { name = "Al'ar", amount = 10, zone = "Tempest Keep", encounterOrder = 1 },
     ["19516"] = { name = "Void Reaver", amount = 10, zone = "Tempest Keep", encounterOrder = 2 },
-    ["19622"] = { name = "Kael'thas Sunstrider", amount = 20, zone = "Tempest Keep", encounterOrder = 3 },
+    ["18805"] = { name = "High Astromancer Solarian", amount = 10, zone = "Tempest Keep", encounterOrder = 3 },
+    ["19622"] = { name = "Kael'thas Sunstrider", amount = 20, zone = "Tempest Keep", encounterOrder = 4 },
     ["23576"] = { name = "Nalorakk", amount = 10, zone = "Zul'Aman", encounterOrder = 1 },
     ["23574"] = { name = "Akil'zon", amount = 10, zone = "Zul'Aman", encounterOrder = 2 },
     ["23578"] = { name = "Jan'alai the Dragonhawk Lord", amount = 10, zone = "Zul'Aman", encounterOrder = 3 },
@@ -77,7 +78,7 @@ local DEFAULT_BOSSES = {
 
 -- Bump this number any time DEFAULT_BOSSES amounts, encounterOrder, or names change.
 -- On load, if the stored guild.bossSchemaVersion is older, amount is also reset to defaults.
-local BOSS_SCHEMA_VERSION = 2
+local BOSS_SCHEMA_VERSION = 3
 
 local ZONE_SORT_ORDER = {
     ["Karazhan"] = 1,
@@ -291,10 +292,11 @@ function addon:RefreshRaidDkpPopup()
 
     local entries = self:GetSortedTrackedDkpEntries()
     local count = math.min(#entries, #frame.rows)
-    local localPlayer = self.playerName
+    local localPlayer = self:GetPlayerName()
     local baseFont, baseSize, baseFlags = GameFontHighlightSmall:GetFont()
 
     for index, row in ipairs(frame.rows) do
+        row:SetFont(baseFont, baseSize, baseFlags or "")
         if index <= count then
             local entry = entries[index]
             local colorHex = self:GetPlayerClassColorHex(entry.name)
@@ -305,16 +307,13 @@ function addon:RefreshRaidDkpPopup()
                 displayName = entry.name
             end
             if entry.name == localPlayer then
-                row:SetFont(baseFont, baseSize, "BOLD")
+                row:SetText(string.format("|cFFFFD700%d.|r %s |cFFFFD700- %d (You)|r", index, displayName, entry.dkp))
             else
-                row:SetFont(baseFont, baseSize, baseFlags or "")
+                row:SetText(string.format("%d. %s - %d", index, displayName, entry.dkp))
             end
-            row:SetText(string.format("%d. %s - %d", index, displayName, entry.dkp))
         elseif index == 1 then
-            row:SetFont(baseFont, baseSize, baseFlags or "")
             row:SetText("No tracked raid members found.")
         else
-            row:SetFont(baseFont, baseSize, baseFlags or "")
             row:SetText("")
         end
     end
@@ -931,6 +930,7 @@ function addon:EnsureUI()
 
     local controlFrame = self:CreatePanel("MapleDKPControlFrame", 430, 460, "Maple DKP Loot Control")
     controlFrame:SetPoint("CENTER", UIParent, "CENTER", -250, 30)
+    controlFrame:SetFrameStrata("DIALOG")
     controlFrame.closeButton:SetScript("OnClick", function()
         controlFrame:Hide()
     end)
@@ -941,7 +941,7 @@ function addon:EnsureUI()
 
     controlFrame.minBidInput = self:CreateInput(controlFrame, 50, 24, "LEFT", minBidLabel, "RIGHT", 8, 0, true)
     controlFrame.minBidInput:SetMaxLetters(5)
-    controlFrame.minBidInput:SetText("0")
+    controlFrame.minBidInput:SetText("10")
 
     local durationLabel = controlFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     durationLabel:SetPoint("LEFT", controlFrame.minBidInput, "RIGHT", 18, 0)
@@ -1001,6 +1001,8 @@ function addon:EnsureUI()
 
     local auctionFrame = self:CreatePanel("MapleDKPAuctionFrame", 320, 205, "Maple DKP Auction")
     auctionFrame:SetPoint("CENTER", UIParent, "CENTER", 180, 120)
+    auctionFrame:SetFrameStrata("DIALOG")
+    auctionFrame:SetToplevel(true)
     auctionFrame.closeButton:Hide()
     auctionFrame.itemText = self:CreateRowText(auctionFrame, "GameFontHighlight", 280, "TOPLEFT", 16, -42)
     auctionFrame.minBidText = self:CreateRowText(auctionFrame, "GameFontHighlightSmall", 280, "TOPLEFT", 16, -72)
@@ -1054,6 +1056,8 @@ function addon:EnsureUI()
 
     local historyFrame = self:CreatePanel("MapleDKPHistoryFrame", 800, 700, "DKP History")
     historyFrame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+    historyFrame:SetFrameStrata("DIALOG")
+    historyFrame:SetToplevel(true)
     historyFrame.closeButton:SetScript("OnClick", function()
         historyFrame:Hide()
     end)
@@ -1312,6 +1316,7 @@ function addon:EnsureUI()
     actionsPage.historyHeader:SetText("Recent History")
     actionsPage.historyViewButton = self:CreateButton(actionsPage, "View All", 80, 22, "TOPRIGHT", actionsPage, "TOPRIGHT", -2, -178, function()
         addon.ui.historyFrame:Show()
+        addon.ui.historyFrame:Raise()
         addon:RefreshHistoryFrame()
     end)
     actionsPage.historyRows = {}
@@ -1386,7 +1391,7 @@ function addon:EnsureUI()
     auctionMinLabel:SetText("Min Bid")
     auctionPage.auctionMinInput = self:CreateInput(auctionPage, 70, 24, "LEFT", auctionMinLabel, "RIGHT", 8, 0, true)
     auctionPage.auctionMinInput:SetMaxLetters(5)
-    auctionPage.auctionMinInput:SetText("0")
+    auctionPage.auctionMinInput:SetText("10")
     local auctionDurationLabel = auctionPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     auctionDurationLabel:SetPoint("LEFT", auctionPage.auctionMinInput, "RIGHT", 14, 0)
     auctionDurationLabel:SetText("Seconds")
@@ -1652,7 +1657,21 @@ function addon:RefreshAuctionPopup()
     end
 
     auctionFrame:Show()
+    auctionFrame:Raise()
     self:RefreshRaidDkpPopup()
+end
+
+function addon:ReopenAuctionBidWindow(showNoAuctionMessage)
+    if not self.activeAuction then
+        if showNoAuctionMessage then
+            self:Print("There is no active auction.")
+        end
+        return false
+    end
+
+    self:EnsureUI()
+    self:RefreshAuctionPopup()
+    return true
 end
 
 function addon:ShowLootNotice()
@@ -1715,11 +1734,14 @@ function addon:HandleLootOpened()
 
     local lootItems = {}
     local lootCount = GetNumLootItems() or 0
+    local requireEpic = not self:IsTestMode()
     for slotIndex = 1, lootCount do
         if LootSlotHasItem(slotIndex) then
             local itemLink = GetLootSlotLink and GetLootSlotLink(slotIndex) or nil
-            local _, itemName = GetLootSlotInfo(slotIndex)
-            if itemLink or itemName then
+            local _, itemName, _, quality = GetLootSlotInfo(slotIndex)
+            if requireEpic and (not quality or quality < 4) then
+                -- skip non-epic items in live mode
+            elseif itemLink or itemName then
                 lootItems[#lootItems + 1] = itemLink or itemName
             end
         end
@@ -1731,8 +1753,6 @@ function addon:HandleLootOpened()
 
     self.recentLoot = lootItems
     self:EnsureUI()
-    self.ui.controlFrame:Show()
-    self:ShowLootNotice()
     self:RefreshLeaderUI()
     self:BroadcastLoot()
 end
@@ -1814,12 +1834,20 @@ function addon:SetNewMemberDefaultDkp(value)
     local parsed = safeNumber(value, nil)
     if parsed == nil then
         self:Print("Usage: /mdkp defaultdkp Value")
+    auctionPage.reopenBidButton = self:CreateButton(auctionPage, "Bid Window", 100, 22, "LEFT", auctionPage.openLootButton, "RIGHT", 10, 0, function()
+        if addon:ReopenAuctionBidWindow(false) then
+            addon:SetOptionsStatus("Reopened the bid window.")
+        else
+            addon:SetOptionsStatus("There is no active auction to reopen.")
+        end
+    end)
         return false
     end
 
     local resolvedValue = math.floor(parsed + 0.5)
     if resolvedValue < 0 then
         self:Print("Default DKP cannot be negative.")
+    self:Print("/mdkp auction reopen")
         return false
     end
 
@@ -3518,6 +3546,11 @@ function addon:HandleSlashCommand(message)
 
         if subCommand == "status" then
             self:ShowAuctionStatus()
+            return
+        end
+
+        if subCommand == "reopen" or subCommand == "window" then
+            self:ReopenAuctionBidWindow(true)
             return
         end
     end
