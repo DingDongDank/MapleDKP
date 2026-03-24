@@ -1917,12 +1917,12 @@ function addon:IsOfficer()
 end
 
 function addon:EnsureDatabase()
-    EasyDKPDB = EasyDKPDB or {}
-    EasyDKPDB.version = 1
-    EasyDKPDB.guilds = EasyDKPDB.guilds or {}
-    EasyDKPDB.settings = EasyDKPDB.settings or { quiet = false, testAllLoot = false }
+    MapleDKPDB = MapleDKPDB or {}
+    MapleDKPDB.version = 1
+    MapleDKPDB.guilds = MapleDKPDB.guilds or {}
+    MapleDKPDB.settings = MapleDKPDB.settings or { quiet = false, testAllLoot = false }
 
-    self.db = EasyDKPDB
+    self.db = MapleDKPDB
     self.db.settings = self.db.settings or {}
     if self.db.settings.quiet == nil then
         self.db.settings.quiet = false

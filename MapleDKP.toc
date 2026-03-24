@@ -3,6 +3,6 @@
 ## Notes: Guild DKP tracker for Burning Crusade Classic style realms.
 ## Author: GitHub Copilot
 ## Version: 0.1.0
-## SavedVariables: EasyDKPDB
+## SavedVariables: MapleDKPDB
 
 MapleDKP.lua
