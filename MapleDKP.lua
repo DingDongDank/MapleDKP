@@ -5,7 +5,7 @@ MapleDKP = addon
 
 -- Temporary test harness toggle. Keep ON while validating workflows without real raids.
 -- Set to false when moving to in-depth live validation.
-local TEST_MODE = true
+local TEST_MODE = false
 
 addon.prefix = "MapleDKP"
 addon.playerName = nil
