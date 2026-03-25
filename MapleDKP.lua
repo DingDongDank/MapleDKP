@@ -432,6 +432,8 @@ function addon:GetSortedGuildDkpEntries()
         entries[#entries + 1] = {
             name = name,
             dkp = safeNumber(info.dkp, 0),
+            earned = safeNumber(info.earned, 0),
+            spent = safeNumber(info.spent, 0),
         }
     end
 
@@ -457,6 +459,8 @@ function addon:GetSortedGuildMemberEntriesAlphabetical()
         entries[#entries + 1] = {
             name = name,
             dkp = safeNumber(info.dkp, 0),
+            earned = safeNumber(info.earned, 0),
+            spent = safeNumber(info.spent, 0),
         }
     end
 
@@ -474,6 +478,8 @@ function addon:GetSortedGuildMemberEntriesByClass(secondaryByDkp)
         entries[#entries + 1] = {
             name = name,
             dkp = safeNumber(info.dkp, 0),
+            earned = safeNumber(info.earned, 0),
+            spent = safeNumber(info.spent, 0),
             class = (info.class and info.class ~= "") and info.class or nil,
         }
     end
@@ -492,6 +498,60 @@ function addon:GetSortedGuildMemberEntriesByClass(secondaryByDkp)
         end
         return left.name < right.name
     end)
+    return entries
+end
+
+function addon:GetSortedGuildMemberEntriesByEarned()
+    local entries = {}
+
+    if not self.guild then
+        return entries
+    end
+
+    for name, info in pairs(self.guild.players or {}) do
+        entries[#entries + 1] = {
+            name = name,
+            dkp = safeNumber(info.dkp, 0),
+            earned = safeNumber(info.earned, 0),
+            spent = safeNumber(info.spent, 0),
+        }
+    end
+
+    table.sort(entries, function(left, right)
+        if left.earned == right.earned then
+            return left.name < right.name
+        end
+
+        return left.earned > right.earned
+    end)
+
+    return entries
+end
+
+function addon:GetSortedGuildMemberEntriesBySpent()
+    local entries = {}
+
+    if not self.guild then
+        return entries
+    end
+
+    for name, info in pairs(self.guild.players or {}) do
+        entries[#entries + 1] = {
+            name = name,
+            dkp = safeNumber(info.dkp, 0),
+            earned = safeNumber(info.earned, 0),
+            spent = safeNumber(info.spent, 0),
+        }
+    end
+
+    table.sort(entries, function(left, right)
+        if left.spent == right.spent then
+            return left.name < right.name
+        end
+
+        return left.spent > right.spent
+    end)
+
     return entries
 end
 
@@ -636,6 +696,10 @@ function addon:SetOptionsTab(tabName)
         return
     end
 
+    if tabName == "auction" and not self:IsOfficer() then
+        tabName = "members"
+    end
+
     local optionsFrame = self.ui.optionsFrame
     optionsFrame.activeTab = tabName
 
@@ -669,6 +733,10 @@ function addon:RefreshOptionsMembersPage()
     local entries
     if sortMode == "dkp" then
         entries = self:GetSortedGuildDkpEntries()
+    elseif sortMode == "earned" then
+        entries = self:GetSortedGuildMemberEntriesByEarned()
+    elseif sortMode == "spent" then
+        entries = self:GetSortedGuildMemberEntriesBySpent()
     elseif sortMode == "class" then
         entries = self:GetSortedGuildMemberEntriesByClass(page.classSecondaryByDkp)
     else
@@ -679,6 +747,12 @@ function addon:RefreshOptionsMembersPage()
     end
     if page.sortByDkpButton then
         if sortMode == "dkp" then page.sortByDkpButton:Disable() else page.sortByDkpButton:Enable() end
+    end
+    if page.sortByEarnedButton then
+        if sortMode == "earned" then page.sortByEarnedButton:Disable() else page.sortByEarnedButton:Enable() end
+    end
+    if page.sortBySpentButton then
+        if sortMode == "spent" then page.sortBySpentButton:Disable() else page.sortBySpentButton:Enable() end
     end
     if page.sortByClassButton then
         if sortMode == "class" then page.sortByClassButton:Disable() else page.sortByClassButton:Enable() end
@@ -719,6 +793,14 @@ function addon:RefreshOptionsMembersPage()
                 button.dkpText:SetText(tostring(entry.dkp))
                 button.dkpText:Show()
             end
+            if button.earnedText then
+                button.earnedText:SetText(tostring(safeNumber(entry.earned, 0)))
+                button.earnedText:Show()
+            end
+            if button.spentText then
+                button.spentText:SetText(tostring(safeNumber(entry.spent, 0)))
+                button.spentText:Show()
+            end
             button:Show()
             button:Enable()
         else
@@ -728,19 +810,38 @@ function addon:RefreshOptionsMembersPage()
                 button.dkpText:SetText("")
                 button.dkpText:Hide()
             end
+            if button.earnedText then
+                button.earnedText:SetText("")
+                button.earnedText:Hide()
+            end
+            if button.spentText then
+                button.spentText:SetText("")
+                button.spentText:Hide()
+            end
             button:Hide()
         end
     end
 
     if selectedName then
-        page.selectedText:SetText(string.format("Selected: %s (%d DKP)", selectedName, self:GetPlayerDKP(selectedName)))
+        local selectedInfo = self.guild and self.guild.players and self.guild.players[selectedName] or nil
+        page.selectedText:SetText(string.format(
+            "Selected: %s (%d DKP | Earned %d | Spent %d)",
+            selectedName,
+            self:GetPlayerDKP(selectedName),
+            safeNumber(selectedInfo and selectedInfo.earned, 0),
+            safeNumber(selectedInfo and selectedInfo.spent, 0)
+        ))
     else
         page.selectedText:SetText("Select a member to edit their DKP.")
     end
 
     local startIndex = #entries == 0 and 0 or (offset * columns + 1)
     local endIndex = math.min(#entries, (offset + rowsPerColumn) * columns)
-    local sortLabel = sortMode == "dkp" and "DKP desc" or sortMode == "class" and (page.classSecondaryByDkp and "Class+DKP" or "Class") or "A-Z"
+    local sortLabel = sortMode == "dkp" and "DKP desc"
+        or sortMode == "earned" and "Earned desc"
+        or sortMode == "spent" and "Spent desc"
+        or sortMode == "class" and (page.classSecondaryByDkp and "Class+DKP" or "Class")
+        or "A-Z"
     page.summaryText:SetText(string.format("Tracking %d players. Showing %d-%d (%s).", #entries, startIndex, endIndex, sortLabel))
     page.quietStatusText:SetText(self:IsQuietMode() and "Quiet mode: On" or "Quiet mode: Off")
     page.toggleQuietButton:SetText(self:IsQuietMode() and "Disable Quiet" or "Enable Quiet")
@@ -753,6 +854,54 @@ function addon:RefreshOptionsActionsPage()
     end
 
     local page = optionsFrame.actionsPage
+    local isOfficer = self:IsOfficer()
+
+    local officerOnlyControls = {
+        page.description,
+        page.adjustTargetLabel,
+        page.adjustTargetInput,
+        page.adjustAmountLabel,
+        page.adjustAmountInput,
+        page.reasonLabel,
+        page.adjustReasonInput,
+        page.addButton,
+        page.subtractButton,
+        page.setButton,
+        page.awardLabel,
+        page.awardAmountInput,
+        page.awardReasonLabel,
+        page.awardReasonInput,
+        page.awardButton,
+        page.defaultMemberDkpLabel,
+        page.defaultMemberDkpInput,
+        page.defaultMemberDkpButton,
+        page.testLootButton,
+        page.testLootStatusText,
+    }
+
+    for _, control in ipairs(officerOnlyControls) do
+        if control then
+            if isOfficer then
+                control:Show()
+            else
+                control:Hide()
+            end
+        end
+    end
+
+    if page.syncButton then
+        page.syncButton:Show()
+    end
+    if page.historyHeader then
+        page.historyHeader:Show()
+    end
+    if page.historyViewButton then
+        page.historyViewButton:Show()
+    end
+    for _, row in ipairs(page.historyRows or {}) do
+        row:Show()
+    end
+
     if page.defaultMemberDkpInput and not page.defaultMemberDkpInput:HasFocus() then
         page.defaultMemberDkpInput:SetText(tostring(self:GetNewMemberDefaultDkp()))
     end
@@ -790,6 +939,39 @@ function addon:RefreshOptionsBossesPage()
     end
 
     local page = optionsFrame.bossesPage
+    local isOfficer = self:IsOfficer()
+
+    if page.description then
+        if isOfficer then
+            page.description:SetText("Select a boss from the list, then update only its DKP value.")
+        else
+            page.description:SetText("Boss DKP values (read-only).")
+        end
+    end
+
+    local editControls = {
+        page.selectedText,
+        page.bossIdHeader,
+        page.bossIdValue,
+        page.bossNameHeader,
+        page.bossNameValue,
+        page.bossZoneHeader,
+        page.bossZoneValue,
+        page.bossAmountHeader,
+        page.bossAmountInput,
+        page.saveBossButton,
+    }
+
+    for _, control in ipairs(editControls) do
+        if control then
+            if isOfficer then
+                control:Show()
+            else
+                control:Hide()
+            end
+        end
+    end
+
     local rows = self:GetBossDisplayRows()
     local entries = self:GetSortedBossEntries()
     local selectedNpcId = self.ui.optionsSelectedBossNpcId
@@ -906,6 +1088,18 @@ function addon:RefreshOptionsUI()
 
     local optionsFrame = self.ui.optionsFrame
     local isOfficer = self:IsOfficer()
+
+    if optionsFrame.tabButtons and optionsFrame.tabButtons.auction then
+        if isOfficer then
+            optionsFrame.tabButtons.auction:Show()
+        else
+            optionsFrame.tabButtons.auction:Hide()
+            if optionsFrame.activeTab == "auction" then
+                self:SetOptionsTab("members")
+                return
+            end
+        end
+    end
 
     optionsFrame.officerLabel:SetText(isOfficer and "Officer controls enabled" or "Officer controls disabled")
 
@@ -1126,6 +1320,16 @@ function addon:EnsureUI()
         membersPage.scrollOffset = 0
         addon:RefreshOptionsMembersPage()
     end)
+    membersPage.sortBySpentButton = self:CreateButton(membersPage, "Spent", 68, 20, "RIGHT", membersPage.sortByDkpButton, "LEFT", -4, 0, function()
+        membersPage.sortMode = "spent"
+        membersPage.scrollOffset = 0
+        addon:RefreshOptionsMembersPage()
+    end)
+    membersPage.sortByEarnedButton = self:CreateButton(membersPage, "Earned", 68, 20, "RIGHT", membersPage.sortBySpentButton, "LEFT", -4, 0, function()
+        membersPage.sortMode = "earned"
+        membersPage.scrollOffset = 0
+        addon:RefreshOptionsMembersPage()
+    end)
     membersPage.sortByNameButton = self:CreateButton(membersPage, "Name", 68, 20, "RIGHT", membersPage.sortByDkpButton, "LEFT", -4, 0, function()
         membersPage.sortMode = "name"
         membersPage.scrollOffset = 0
@@ -1137,21 +1341,46 @@ function addon:EnsureUI()
         membersPage.scrollOffset = 0
         addon:RefreshOptionsMembersPage()
     end)
+    membersPage.sortByNameButton:ClearAllPoints()
+    membersPage.sortByNameButton:SetPoint("RIGHT", membersPage.sortByEarnedButton, "LEFT", -4, 0)
     membersPage.scrollOffset = 0
-    membersPage.columns = 3
+    membersPage.columns = 2
     membersPage.rowsPerColumn = 20
     membersPage.scrollBar = self:CreateVerticalSlider(membersPage, 458, "TOPRIGHT", membersPage, "TOPRIGHT", 0, -82, function(value)
         membersPage.scrollOffset = value
         addon:RefreshOptionsMembersPage()
     end)
+
+    membersPage.columnHeaders = {}
     membersPage.memberButtons = {}
-    local memberColumnWidth = 202
+    local memberColumnWidth = 330
     local memberColumnGap = 8
-    local memberDkpWidth = 48
+    local memberDkpWidth = 52
+    local memberEarnedWidth = 52
+    local memberSpentWidth = 52
+    for columnIndex = 1, membersPage.columns do
+        local offsetX = (columnIndex - 1) * (memberColumnWidth + memberColumnGap)
+        local headerName = self:CreateRowText(membersPage, "GameFontNormalSmall", 160, "TOPLEFT", offsetX + 8, -82)
+        headerName:SetText("Name")
+        local headerDkp = self:CreateRowText(membersPage, "GameFontNormalSmall", memberDkpWidth, "TOPLEFT", offsetX + 184, -82)
+        headerDkp:SetJustifyH("RIGHT")
+        headerDkp:SetText("DKP")
+        local headerEarned = self:CreateRowText(membersPage, "GameFontNormalSmall", memberEarnedWidth, "TOPLEFT", offsetX + 240, -82)
+        headerEarned:SetJustifyH("RIGHT")
+        headerEarned:SetText("Earn")
+        local headerSpent = self:CreateRowText(membersPage, "GameFontNormalSmall", memberSpentWidth, "TOPLEFT", offsetX + 296, -82)
+        headerSpent:SetJustifyH("RIGHT")
+        headerSpent:SetText("Spent")
+        membersPage.columnHeaders[#membersPage.columnHeaders + 1] = headerName
+        membersPage.columnHeaders[#membersPage.columnHeaders + 1] = headerDkp
+        membersPage.columnHeaders[#membersPage.columnHeaders + 1] = headerEarned
+        membersPage.columnHeaders[#membersPage.columnHeaders + 1] = headerSpent
+    end
+
     for rowIndex = 1, membersPage.rowsPerColumn do
         for columnIndex = 1, membersPage.columns do
             local offsetX = (columnIndex - 1) * (memberColumnWidth + memberColumnGap)
-            local button = self:CreateListButton(membersPage, memberColumnWidth, 18, "TOPLEFT", membersPage, "TOPLEFT", offsetX, -82 - ((rowIndex - 1) * 22), function(clickedButton)
+            local button = self:CreateListButton(membersPage, memberColumnWidth, 18, "TOPLEFT", membersPage, "TOPLEFT", offsetX, -100 - ((rowIndex - 1) * 22), function(clickedButton)
                 if clickedButton.entryName then
                     addon:SelectOptionsMember(clickedButton.entryName)
                     addon:RefreshOptionsMembersPage()
@@ -1160,12 +1389,20 @@ function addon:EnsureUI()
             -- Shrink the name text so it doesn't overlap the DKP number on the right.
             button.text:ClearAllPoints()
             button.text:SetPoint("LEFT", button, "LEFT", 4, 0)
-            button.text:SetPoint("RIGHT", button, "RIGHT", -(memberDkpWidth + 6), 0)
+            button.text:SetPoint("RIGHT", button, "RIGHT", -(memberDkpWidth + memberEarnedWidth + memberSpentWidth + 14), 0)
             -- Right-aligned DKP value label.
             button.dkpText = button:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
             button.dkpText:SetWidth(memberDkpWidth)
-            button.dkpText:SetPoint("RIGHT", button, "RIGHT", -4, 0)
+            button.dkpText:SetPoint("RIGHT", button, "RIGHT", -(memberEarnedWidth + memberSpentWidth + 8), 0)
             button.dkpText:SetJustifyH("RIGHT")
+            button.earnedText = button:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            button.earnedText:SetWidth(memberEarnedWidth)
+            button.earnedText:SetPoint("RIGHT", button, "RIGHT", -(memberSpentWidth + 6), 0)
+            button.earnedText:SetJustifyH("RIGHT")
+            button.spentText = button:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            button.spentText:SetWidth(memberSpentWidth)
+            button.spentText:SetPoint("RIGHT", button, "RIGHT", -4, 0)
+            button.spentText:SetJustifyH("RIGHT")
             button.rowIndex = rowIndex
             button.columnIndex = columnIndex
             membersPage.memberButtons[#membersPage.memberButtons + 1] = button
@@ -1225,21 +1462,21 @@ function addon:EnsureUI()
     local actionsPage = createPage()
     actionsPage.description = self:CreateRowText(actionsPage, "GameFontHighlightSmall", 620, "TOPLEFT", 0, -4)
     actionsPage.description:SetText("Use the selected member from the Members tab, or type a name manually.")
-    local adjustTargetLabel = actionsPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    adjustTargetLabel:SetPoint("TOPLEFT", 0, -34)
-    adjustTargetLabel:SetText("Player")
-    actionsPage.adjustTargetInput = self:CreateInput(actionsPage, 140, 24, "LEFT", adjustTargetLabel, "RIGHT", 8, 0, false)
+    actionsPage.adjustTargetLabel = actionsPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    actionsPage.adjustTargetLabel:SetPoint("TOPLEFT", 0, -34)
+    actionsPage.adjustTargetLabel:SetText("Player")
+    actionsPage.adjustTargetInput = self:CreateInput(actionsPage, 140, 24, "LEFT", actionsPage.adjustTargetLabel, "RIGHT", 8, 0, false)
     actionsPage.adjustTargetInput:SetMaxLetters(24)
-    local adjustAmountLabel = actionsPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    adjustAmountLabel:SetPoint("LEFT", actionsPage.adjustTargetInput, "RIGHT", 14, 0)
-    adjustAmountLabel:SetText("Amount")
-    actionsPage.adjustAmountInput = self:CreateInput(actionsPage, 70, 24, "LEFT", adjustAmountLabel, "RIGHT", 8, 0, true)
+    actionsPage.adjustAmountLabel = actionsPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    actionsPage.adjustAmountLabel:SetPoint("LEFT", actionsPage.adjustTargetInput, "RIGHT", 14, 0)
+    actionsPage.adjustAmountLabel:SetText("Amount")
+    actionsPage.adjustAmountInput = self:CreateInput(actionsPage, 70, 24, "LEFT", actionsPage.adjustAmountLabel, "RIGHT", 8, 0, true)
     actionsPage.adjustAmountInput:SetMaxLetters(6)
     actionsPage.adjustAmountInput:SetText("0")
-    local reasonLabel = actionsPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    reasonLabel:SetPoint("TOPLEFT", 0, -64)
-    reasonLabel:SetText("Reason")
-    actionsPage.adjustReasonInput = self:CreateInput(actionsPage, 300, 24, "LEFT", reasonLabel, "RIGHT", 8, 0, false)
+    actionsPage.reasonLabel = actionsPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    actionsPage.reasonLabel:SetPoint("TOPLEFT", 0, -64)
+    actionsPage.reasonLabel:SetText("Reason")
+    actionsPage.adjustReasonInput = self:CreateInput(actionsPage, 300, 24, "LEFT", actionsPage.reasonLabel, "RIGHT", 8, 0, false)
     actionsPage.adjustReasonInput:SetMaxLetters(60)
     actionsPage.adjustReasonInput:SetText("Manual adjustment")
     actionsPage.addButton = self:CreateButton(actionsPage, "Add", 70, 22, "LEFT", actionsPage.adjustReasonInput, "RIGHT", 8, 0, function()
@@ -1258,16 +1495,16 @@ function addon:EnsureUI()
         addon:SetOptionsStatus("Applied DKP set adjustment.")
         addon:RefreshOptionsUI()
     end)
-    local awardLabel = actionsPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    awardLabel:SetPoint("TOPLEFT", 0, -104)
-    awardLabel:SetText("Raid Award")
-    actionsPage.awardAmountInput = self:CreateInput(actionsPage, 70, 24, "LEFT", awardLabel, "RIGHT", 8, 0, true)
+    actionsPage.awardLabel = actionsPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    actionsPage.awardLabel:SetPoint("TOPLEFT", 0, -104)
+    actionsPage.awardLabel:SetText("Raid Award")
+    actionsPage.awardAmountInput = self:CreateInput(actionsPage, 70, 24, "LEFT", actionsPage.awardLabel, "RIGHT", 8, 0, true)
     actionsPage.awardAmountInput:SetMaxLetters(5)
     actionsPage.awardAmountInput:SetText("10")
-    local awardReasonLabel = actionsPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    awardReasonLabel:SetPoint("LEFT", actionsPage.awardAmountInput, "RIGHT", 14, 0)
-    awardReasonLabel:SetText("Reason")
-    actionsPage.awardReasonInput = self:CreateInput(actionsPage, 250, 24, "LEFT", awardReasonLabel, "RIGHT", 8, 0, false)
+    actionsPage.awardReasonLabel = actionsPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    actionsPage.awardReasonLabel:SetPoint("LEFT", actionsPage.awardAmountInput, "RIGHT", 14, 0)
+    actionsPage.awardReasonLabel:SetText("Reason")
+    actionsPage.awardReasonInput = self:CreateInput(actionsPage, 250, 24, "LEFT", actionsPage.awardReasonLabel, "RIGHT", 8, 0, false)
     actionsPage.awardReasonInput:SetMaxLetters(60)
     actionsPage.awardReasonInput:SetText("Raid award")
     actionsPage.awardButton = self:CreateButton(actionsPage, "Award", 70, 22, "LEFT", actionsPage.awardReasonInput, "RIGHT", 8, 0, function()
@@ -1275,10 +1512,10 @@ function addon:EnsureUI()
         addon:SetOptionsStatus("Awarded raid DKP.")
         addon:RefreshOptionsUI()
     end)
-    local defaultMemberDkpLabel = actionsPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    defaultMemberDkpLabel:SetPoint("TOPLEFT", 0, -130)
-    defaultMemberDkpLabel:SetText("New Member DKP")
-    actionsPage.defaultMemberDkpInput = self:CreateInput(actionsPage, 60, 24, "LEFT", defaultMemberDkpLabel, "RIGHT", 8, 0, true)
+    actionsPage.defaultMemberDkpLabel = actionsPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    actionsPage.defaultMemberDkpLabel:SetPoint("TOPLEFT", 0, -130)
+    actionsPage.defaultMemberDkpLabel:SetText("New Member DKP")
+    actionsPage.defaultMemberDkpInput = self:CreateInput(actionsPage, 60, 24, "LEFT", actionsPage.defaultMemberDkpLabel, "RIGHT", 8, 0, true)
     actionsPage.defaultMemberDkpInput:SetMaxLetters(6)
     actionsPage.defaultMemberDkpInput:SetText(tostring(self:GetNewMemberDefaultDkp()))
     actionsPage.defaultMemberDkpButton = self:CreateButton(actionsPage, "Save", 64, 22, "LEFT", actionsPage.defaultMemberDkpInput, "RIGHT", 8, 0, function()
@@ -1346,28 +1583,28 @@ function addon:EnsureUI()
     end
     self:EnableMouseWheelScroll(bossesPage, bossesPage.scrollBar)
     bossesPage.selectedText = self:CreateRowText(bossesPage, "GameFontHighlightSmall", 290, "TOPLEFT", 350, -34)
-    local bossIdHeader = bossesPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    bossIdHeader:SetPoint("TOPLEFT", 350, -64)
-    bossIdHeader:SetText("NPC ID")
+    bossesPage.bossIdHeader = bossesPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    bossesPage.bossIdHeader:SetPoint("TOPLEFT", 350, -64)
+    bossesPage.bossIdHeader:SetText("NPC ID")
     bossesPage.bossIdValue = bossesPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    bossesPage.bossIdValue:SetPoint("LEFT", bossIdHeader, "RIGHT", 8, 0)
+    bossesPage.bossIdValue:SetPoint("LEFT", bossesPage.bossIdHeader, "RIGHT", 8, 0)
     bossesPage.bossIdValue:SetJustifyH("LEFT")
-    local bossNameHeader = bossesPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    bossNameHeader:SetPoint("TOPLEFT", 350, -92)
-    bossNameHeader:SetText("Boss")
+    bossesPage.bossNameHeader = bossesPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    bossesPage.bossNameHeader:SetPoint("TOPLEFT", 350, -92)
+    bossesPage.bossNameHeader:SetText("Boss")
     bossesPage.bossNameValue = bossesPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    bossesPage.bossNameValue:SetPoint("LEFT", bossNameHeader, "RIGHT", 8, 0)
+    bossesPage.bossNameValue:SetPoint("LEFT", bossesPage.bossNameHeader, "RIGHT", 8, 0)
     bossesPage.bossNameValue:SetJustifyH("LEFT")
-    local bossZoneHeader = bossesPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    bossZoneHeader:SetPoint("TOPLEFT", 350, -120)
-    bossZoneHeader:SetText("Dungeon")
+    bossesPage.bossZoneHeader = bossesPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    bossesPage.bossZoneHeader:SetPoint("TOPLEFT", 350, -120)
+    bossesPage.bossZoneHeader:SetText("Dungeon")
     bossesPage.bossZoneValue = bossesPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    bossesPage.bossZoneValue:SetPoint("LEFT", bossZoneHeader, "RIGHT", 8, 0)
+    bossesPage.bossZoneValue:SetPoint("LEFT", bossesPage.bossZoneHeader, "RIGHT", 8, 0)
     bossesPage.bossZoneValue:SetJustifyH("LEFT")
-    local bossAmountHeader = bossesPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    bossAmountHeader:SetPoint("TOPLEFT", 350, -152)
-    bossAmountHeader:SetText("Award")
-    bossesPage.bossAmountInput = self:CreateInput(bossesPage, 80, 24, "LEFT", bossAmountHeader, "RIGHT", 8, 0, true)
+    bossesPage.bossAmountHeader = bossesPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    bossesPage.bossAmountHeader:SetPoint("TOPLEFT", 350, -152)
+    bossesPage.bossAmountHeader:SetText("Award")
+    bossesPage.bossAmountInput = self:CreateInput(bossesPage, 80, 24, "LEFT", bossesPage.bossAmountHeader, "RIGHT", 8, 0, true)
     bossesPage.bossAmountInput:SetMaxLetters(5)
     bossesPage.saveBossButton = self:CreateButton(bossesPage, "Save Value", 90, 22, "LEFT", bossesPage.bossAmountInput, "RIGHT", 10, 0, function()
         if addon.ui.optionsSelectedBossNpcId and addon.ui.optionsSelectedBossNpcId ~= "0" then
@@ -1909,8 +2146,62 @@ function addon:IsOfficer()
         return false
     end
 
+    if IsGuildLeader and IsGuildLeader("player") then
+        return true
+    end
+
     if CanEditOfficerNote then
-        return CanEditOfficerNote()
+        local canEdit = CanEditOfficerNote()
+        if canEdit then
+            return true
+        end
+    end
+
+    if C_GuildInfo and C_GuildInfo.CanEditOfficerNote then
+        local canEdit = C_GuildInfo.CanEditOfficerNote()
+        if canEdit then
+            return true
+        end
+    end
+
+    local cachedRankIndex = safeNumber(self.playerGuildRankIndex, 99)
+    if cachedRankIndex <= 1 then
+        return true
+    end
+
+    -- Fallback: inspect roster rank directly in case officer-note permissions are restricted.
+    local refreshGuildRoster = GuildRoster or (C_GuildInfo and C_GuildInfo.GuildRoster)
+    if refreshGuildRoster then
+        pcall(refreshGuildRoster)
+    end
+
+    local memberCount = 0
+    if GetNumGuildMembers then
+        memberCount = GetNumGuildMembers() or 0
+    elseif C_GuildInfo and C_GuildInfo.GetNumGuildMembers then
+        memberCount = C_GuildInfo.GetNumGuildMembers() or 0
+    end
+
+    local playerName = self:GetPlayerName()
+    for index = 1, memberCount do
+        local rosterName
+        local rankIndex
+        if GetGuildRosterInfo then
+            rosterName, _, rankIndex = GetGuildRosterInfo(index)
+        elseif C_GuildInfo and C_GuildInfo.GetGuildRosterInfo then
+            local info = C_GuildInfo.GetGuildRosterInfo(index)
+            if type(info) == "table" then
+                rosterName = info.name or info.fullName
+                rankIndex = info.rankOrder or info.rankIndex
+            else
+                rosterName = info
+            end
+        end
+
+        if self:NormalizeName(rosterName) == playerName then
+            self.playerGuildRankIndex = safeNumber(rankIndex, 99)
+            return self.playerGuildRankIndex <= 1
+        end
     end
 
     return false
@@ -1985,6 +2276,8 @@ function addon:EnsureDatabase()
         for playerName, playerData in pairs(self.guild.players) do
             if playerData then
                 playerData.dkp = DEFAULT_NEW_MEMBER_DKP
+                playerData.earned = safeNumber(playerData.earned, 0)
+                playerData.spent = safeNumber(playerData.spent, 0)
                 playerData.updatedAt = time()
             end
         end
@@ -1997,10 +2290,19 @@ function addon:EnsureDatabase()
         for _, playerData in pairs(self.guild.players) do
             if playerData and safeNumber(playerData.dkp, 0) == 0 then
                 playerData.dkp = self:GetNewMemberDefaultDkp()
+                playerData.earned = safeNumber(playerData.earned, 0)
+                playerData.spent = safeNumber(playerData.spent, 0)
                 playerData.updatedAt = time()
             end
         end
         self.guild.startingDkpSeeded = true
+    end
+
+    for _, playerData in pairs(self.guild.players) do
+        if playerData then
+            playerData.earned = safeNumber(playerData.earned, 0)
+            playerData.spent = safeNumber(playerData.spent, 0)
+        end
     end
 
     return true
@@ -2021,6 +2323,8 @@ function addon:EnsurePlayer(name)
         local startingDkp = self:IsGuildRosterMember(name) and self:GetNewMemberDefaultDkp() or 0
         playerData = {
             dkp = startingDkp,
+            earned = 0,
+            spent = 0,
             updatedAt = time(),
             class = nil,
         }
@@ -2029,6 +2333,9 @@ function addon:EnsurePlayer(name)
         playerData.dkp = self:IsGuildRosterMember(name) and self:GetNewMemberDefaultDkp() or 0
         playerData.updatedAt = time()
     end
+
+    playerData.earned = safeNumber(playerData.earned, 0)
+    playerData.spent = safeNumber(playerData.spent, 0)
 
     return playerData, name
 end
@@ -2285,7 +2592,17 @@ function addon:ApplyPlayerTransaction(targetName, delta, newValue, reason, txId,
     local oldValue = self:GetPlayerDKP(targetName)
     local resolvedValue = safeNumber(newValue, oldValue + safeNumber(delta, 0))
     local appliedDelta = resolvedValue - oldValue
-    self:SetPlayerValue(targetName, resolvedValue)
+    local playerData = self:EnsurePlayer(targetName)
+    if not playerData then
+        return false
+    end
+    playerData.dkp = math.floor(safeNumber(resolvedValue, 0) + 0.5)
+    if appliedDelta > 0 then
+        playerData.earned = safeNumber(playerData.earned, 0) + appliedDelta
+    elseif appliedDelta < 0 then
+        playerData.spent = safeNumber(playerData.spent, 0) + math.abs(appliedDelta)
+    end
+    playerData.updatedAt = time()
     self:RegisterTransaction(txId)
     self:NextRevision()
     self:AppendHistory(string.format("%s -> %s (%+d) by %s [%s]", targetName, resolvedValue, appliedDelta, actor or "unknown", trim(reason)))
@@ -2379,6 +2696,7 @@ end
 function addon:SyncGuildRoster()
     if not self.guild or not IsInGuild() then
         self.guildRosterMembers = {}
+        self.playerGuildRankIndex = nil
         return
     end
 
@@ -2396,18 +2714,23 @@ function addon:SyncGuildRoster()
 
     local rosterMembers = {}
     self.guildRosterMembers = rosterMembers
+    self.playerGuildRankIndex = nil
+    local localPlayerName = self:GetPlayerName()
 
     for index = 1, memberCount do
         local name
         local classToken
+        local rankIndex
         if GetGuildRosterInfo then
-            local rosterName, _, _, _, className, _, _, _, _, _, classFileName = GetGuildRosterInfo(index)
+            local rosterName, _, rosterRankIndex, _, className, _, _, _, _, _, classFileName = GetGuildRosterInfo(index)
             name = rosterName
+            rankIndex = rosterRankIndex
             classToken = classFileName or className
         elseif C_GuildInfo and C_GuildInfo.GetGuildRosterInfo then
             local info = C_GuildInfo.GetGuildRosterInfo(index)
             if type(info) == "table" then
                 name = info.name or info.fullName
+                rankIndex = info.rankOrder or info.rankIndex
                 classToken = info.classFilename or info.classFileName or info.className
             else
                 name = info
@@ -2417,6 +2740,9 @@ function addon:SyncGuildRoster()
         name = self:NormalizeName(name)
         if name then
             rosterMembers[name] = true
+            if name == localPlayerName then
+                self.playerGuildRankIndex = safeNumber(rankIndex, 99)
+            end
             self:EnsurePlayer(name)
             self:UpdatePlayerClass(name, classToken)
         end
@@ -2941,7 +3267,16 @@ function addon:SendSnapshot(targetName, requestId)
 
     for playerName, info in pairs(self.guild.players) do
         -- Include updatedAt so receivers can merge two raid datasets by timestamp.
-        self:SendMessage(table.concat({ "SNP", "PLAYER", snapshotId, playerName, tostring(safeNumber(info.dkp, 0)), tostring(safeNumber(info.updatedAt, 0)) }, "\t"))
+        self:SendMessage(table.concat({
+            "SNP",
+            "PLAYER",
+            snapshotId,
+            playerName,
+            tostring(safeNumber(info.dkp, 0)),
+            tostring(safeNumber(info.updatedAt, 0)),
+            tostring(safeNumber(info.earned, 0)),
+            tostring(safeNumber(info.spent, 0)),
+        }, "\t"))
     end
 
     for npcId, boss in pairs(self.guild.bosses) do
@@ -3289,6 +3624,8 @@ function addon:HandleChatMessage(prefix, message, _, sender)
             local playerName = self:NormalizeName(parts[4])
             local dkpAmount = safeNumber(parts[5], nil)
             local updatedAt = safeNumber(parts[6], 0)
+            local earnedAmount = safeNumber(parts[7], 0)
+            local spentAmount = safeNumber(parts[8], 0)
 
             if dkpAmount == nil then
                 -- Legacy format without snapshotId prefix.
@@ -3296,6 +3633,8 @@ function addon:HandleChatMessage(prefix, message, _, sender)
                 playerName = self:NormalizeName(parts[3])
                 dkpAmount = safeNumber(parts[4], 0)
                 updatedAt = 0
+                earnedAmount = 0
+                spentAmount = 0
             end
 
             if snapshotId ~= self.pendingSnapshot.id then
@@ -3309,6 +3648,8 @@ function addon:HandleChatMessage(prefix, message, _, sender)
             self.pendingSnapshot.players[playerName] = {
                 dkp = math.floor(safeNumber(dkpAmount, 0) + 0.5),
                 updatedAt = safeNumber(updatedAt, 0),
+                earned = math.floor(safeNumber(earnedAmount, 0) + 0.5),
+                spent = math.floor(safeNumber(spentAmount, 0) + 0.5),
             }
             return
         end
