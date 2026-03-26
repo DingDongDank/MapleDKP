@@ -23,6 +23,7 @@ addon.ui = {
 }
 
 local DEFAULT_NEW_MEMBER_DKP = 180
+local ACTIVE_RAIDER_WINDOW_SECONDS = 30 * 24 * 60 * 60
 
 local DEFAULT_BOSSES = {
     ["15550"] = { name = "Attumen the Huntsman", amount = 10, zone = "Karazhan", encounterOrder = 1 },
@@ -184,14 +185,104 @@ local function formatSeconds(seconds)
     return string.format("%ds", remainder)
 end
 
+local function getBagSlotCount(bagIndex)
+    if C_Container and C_Container.GetContainerNumSlots then
+        return C_Container.GetContainerNumSlots(bagIndex) or 0
+    end
+    if GetContainerNumSlots then
+        return GetContainerNumSlots(bagIndex) or 0
+    end
+    return 0
+end
+
+local function getBagItemLink(bagIndex, slotIndex)
+    if C_Container and C_Container.GetContainerItemLink then
+        return C_Container.GetContainerItemLink(bagIndex, slotIndex)
+    end
+    if GetContainerItemLink then
+        return GetContainerItemLink(bagIndex, slotIndex)
+    end
+    return nil
+end
+
+local function getRaidMemberCount()
+    if not IsInRaid or not IsInRaid() then
+        return 0
+    end
+
+    if GetNumGroupMembers then
+        return GetNumGroupMembers() or 0
+    end
+
+    if GetNumRaidMembers then
+        return GetNumRaidMembers() or 0
+    end
+
+    return 0
+end
+
+local function getPartyMemberCount()
+    if GetNumSubgroupMembers then
+        return GetNumSubgroupMembers() or 0
+    end
+
+    if GetNumPartyMembers then
+        return GetNumPartyMembers() or 0
+    end
+
+    return 0
+end
+
+local function isPlayerInCurrentGroup(addonRef, playerName)
+    local normalized = addonRef and addonRef.NormalizeName and addonRef:NormalizeName(playerName)
+    if not normalized then
+        return false
+    end
+
+    local raidMemberCount = getRaidMemberCount()
+    if raidMemberCount > 0 then
+        for index = 1, raidMemberCount do
+            if addonRef:NormalizeName(UnitName("raid" .. index)) == normalized then
+                return true
+            end
+        end
+        return false
+    end
+
+    local partyMemberCount = getPartyMemberCount()
+    if partyMemberCount > 0 then
+        if addonRef:NormalizeName(UnitName("player")) == normalized then
+            return true
+        end
+        for index = 1, partyMemberCount do
+            if addonRef:NormalizeName(UnitName("party" .. index)) == normalized then
+                return true
+            end
+        end
+        return false
+    end
+
+    return false
+end
+
 function addon:CreatePanel(name, width, height, title)
     local frame = CreateFrame("Frame", name, UIParent)
     frame:SetSize(width, height)
     frame:SetFrameStrata("DIALOG")
+    frame:SetToplevel(true)
     frame:SetMovable(true)
     frame:SetClampedToScreen(true)
     frame:EnableMouse(true)
     frame:Hide()
+
+    if frame.HookScript then
+        frame:HookScript("OnShow", function(self)
+            self:Raise()
+        end)
+        frame:HookScript("OnMouseDown", function(self)
+            self:Raise()
+        end)
+    end
 
     local background = frame:CreateTexture(nil, "BACKGROUND")
     background:SetAllPoints(true)
@@ -227,7 +318,51 @@ function addon:CreatePanel(name, width, height, title)
     closeButton:SetPoint("TOPRIGHT", 2, 2)
     frame.closeButton = closeButton
 
+    self:RegisterEscapeFrame(name)
+
     return frame
+end
+
+function addon:RegisterEscapeFrame(frameName)
+    if not frameName or frameName == "" or not UISpecialFrames then
+        return
+    end
+
+    for _, existingName in ipairs(UISpecialFrames) do
+        if existingName == frameName then
+            return
+        end
+    end
+
+    table.insert(UISpecialFrames, frameName)
+end
+
+function addon:CloseAllAddonWindows()
+    if not self.ui or not self.ui.initialized then
+        return
+    end
+
+    local frames = {
+        self.ui.controlFrame,
+        self.ui.auctionFrame,
+        self.ui.raidDkpFrame,
+        self.ui.noticeFrame,
+        self.ui.historyFrame,
+        self.ui.addRaiderFrame,
+        self.ui.optionsFrame,
+    }
+
+    for _, frame in ipairs(frames) do
+        if frame and frame.Hide and frame:IsShown() then
+            frame:Hide()
+        end
+    end
+
+    if self.activeAuction then
+        self.ui.auctionPopupDismissed = true
+    end
+
+    self.ui.noticeExpireAt = nil
 end
 
 function addon:CreateRowText(parent, template, width, anchor, x, y)
@@ -255,6 +390,85 @@ function addon:CreateInput(parent, width, height, point, relativeTo, relativePoi
     end
 
     return input
+end
+
+function addon:TryInsertAuctionItemLink(link)
+    if type(link) ~= "string" or trim(link) == "" then
+        return false
+    end
+
+    if not self.ui or not self.ui.initialized or not self.ui.optionsFrame then
+        return false
+    end
+
+    local auctionPage = self.ui.optionsFrame.auctionPage
+    local input = auctionPage and auctionPage.auctionItemInput or nil
+    if not input or not input.allowItemLinks then
+        return false
+    end
+
+    if not self.ui.optionsFrame:IsShown() then
+        return false
+    end
+
+    if self.ui.optionsFrame.activeTab ~= "auction" then
+        return false
+    end
+
+    if not input:IsShown() then
+        return false
+    end
+
+    input:SetText(link)
+    input:HighlightText(0, 0)
+
+    return true
+end
+
+function addon:EnsureItemLinkHook()
+    if not self.chatLinkHookInstalled and type(ChatEdit_InsertLink) == "function" then
+        local originalChatEditInsertLink = ChatEdit_InsertLink
+        ChatEdit_InsertLink = function(link, ...)
+            if addon and addon.TryInsertAuctionItemLink and addon:TryInsertAuctionItemLink(link) then
+                return true
+            end
+
+            return originalChatEditInsertLink(link, ...)
+        end
+        self.chatLinkHookInstalled = true
+    end
+
+    if not self.modifiedItemClickHookInstalled and hooksecurefunc and type(HandleModifiedItemClick) == "function" then
+        hooksecurefunc("HandleModifiedItemClick", function(link)
+            if addon and addon.TryInsertAuctionItemLink then
+                addon:TryInsertAuctionItemLink(link)
+            end
+        end)
+        self.modifiedItemClickHookInstalled = true
+    end
+
+    if not self.containerItemClickHookInstalled and hooksecurefunc and type(ContainerFrameItemButton_OnModifiedClick) == "function" then
+        hooksecurefunc("ContainerFrameItemButton_OnModifiedClick", function(button)
+            if not IsShiftKeyDown() then
+                return
+            end
+
+            local bagIndex = button and (button.bag or (button.GetParent and button:GetParent() and button:GetParent():GetID()))
+            local slotIndex = button and ((button.GetID and button:GetID()) or button.slot)
+            if bagIndex == nil or slotIndex == nil then
+                return
+            end
+
+            local itemLink = getBagItemLink(bagIndex, slotIndex)
+            if itemLink and addon and addon.TryInsertAuctionItemLink then
+                addon:TryInsertAuctionItemLink(itemLink)
+            end
+        end)
+        self.containerItemClickHookInstalled = true
+    end
+
+    self.itemLinkHookInstalled = self.chatLinkHookInstalled
+        and (self.modifiedItemClickHookInstalled or self.containerItemClickHookInstalled)
 end
 
 function addon:GetSortedTrackedDkpEntries()
@@ -422,20 +636,7 @@ function addon:EnableMouseWheelScroll(frame, slider)
 end
 
 function addon:GetSortedGuildDkpEntries()
-    local entries = {}
-
-    if not self.guild then
-        return entries
-    end
-
-    for name, info in pairs(self.guild.players or {}) do
-        entries[#entries + 1] = {
-            name = name,
-            dkp = safeNumber(info.dkp, 0),
-            earned = safeNumber(info.earned, 0),
-            spent = safeNumber(info.spent, 0),
-        }
-    end
+    local entries = self:GetActiveGuildMemberEntries(false)
 
     table.sort(entries, function(left, right)
         if left.dkp == right.dkp then
@@ -449,20 +650,7 @@ function addon:GetSortedGuildDkpEntries()
 end
 
 function addon:GetSortedGuildMemberEntriesAlphabetical()
-    local entries = {}
-
-    if not self.guild then
-        return entries
-    end
-
-    for name, info in pairs(self.guild.players or {}) do
-        entries[#entries + 1] = {
-            name = name,
-            dkp = safeNumber(info.dkp, 0),
-            earned = safeNumber(info.earned, 0),
-            spent = safeNumber(info.spent, 0),
-        }
-    end
+    local entries = self:GetActiveGuildMemberEntries(false)
 
     table.sort(entries, function(left, right)
         return left.name < right.name
@@ -472,17 +660,7 @@ function addon:GetSortedGuildMemberEntriesAlphabetical()
 end
 
 function addon:GetSortedGuildMemberEntriesByClass(secondaryByDkp)
-    local entries = {}
-    if not self.guild then return entries end
-    for name, info in pairs(self.guild.players or {}) do
-        entries[#entries + 1] = {
-            name = name,
-            dkp = safeNumber(info.dkp, 0),
-            earned = safeNumber(info.earned, 0),
-            spent = safeNumber(info.spent, 0),
-            class = (info.class and info.class ~= "") and info.class or nil,
-        }
-    end
+    local entries = self:GetActiveGuildMemberEntries(true)
     table.sort(entries, function(left, right)
         local lc = left.class or ""
         local rc = right.class or ""
@@ -502,20 +680,7 @@ function addon:GetSortedGuildMemberEntriesByClass(secondaryByDkp)
 end
 
 function addon:GetSortedGuildMemberEntriesByEarned()
-    local entries = {}
-
-    if not self.guild then
-        return entries
-    end
-
-    for name, info in pairs(self.guild.players or {}) do
-        entries[#entries + 1] = {
-            name = name,
-            dkp = safeNumber(info.dkp, 0),
-            earned = safeNumber(info.earned, 0),
-            spent = safeNumber(info.spent, 0),
-        }
-    end
+    local entries = self:GetActiveGuildMemberEntries(false)
 
     table.sort(entries, function(left, right)
         if left.earned == right.earned then
@@ -529,20 +694,7 @@ function addon:GetSortedGuildMemberEntriesByEarned()
 end
 
 function addon:GetSortedGuildMemberEntriesBySpent()
-    local entries = {}
-
-    if not self.guild then
-        return entries
-    end
-
-    for name, info in pairs(self.guild.players or {}) do
-        entries[#entries + 1] = {
-            name = name,
-            dkp = safeNumber(info.dkp, 0),
-            earned = safeNumber(info.earned, 0),
-            spent = safeNumber(info.spent, 0),
-        }
-    end
+    local entries = self:GetActiveGuildMemberEntries(false)
 
     table.sort(entries, function(left, right)
         if left.spent == right.spent then
@@ -553,6 +705,120 @@ function addon:GetSortedGuildMemberEntriesBySpent()
     end)
 
     return entries
+end
+
+function addon:GetActiveRaiderLookup()
+    local active = {}
+    if not self.guild then
+        return active
+    end
+
+    local cutoff = time() - ACTIVE_RAIDER_WINDOW_SECONDS
+
+    for _, entry in ipairs(self.guild.activityLog or {}) do
+        if trim(entry.type) == "PLAYER_TX" then
+            local target = self:NormalizeName(entry.target)
+            local delta = safeNumber(entry.delta, 0)
+            local at = safeNumber(entry.at, 0)
+            if target and delta > 0 and at >= cutoff then
+                active[target] = true
+            end
+        end
+    end
+
+    -- Fallback for older data where activity entries may be missing: if a player
+    -- has earned DKP and was updated recently, keep them visible as active.
+    for name, info in pairs(self.guild.players or {}) do
+        if not active[name] then
+            local updatedAt = safeNumber(info.updatedAt, 0)
+            local earned = safeNumber(info.earned, 0)
+            if earned > 0 and updatedAt >= cutoff then
+                active[name] = true
+            end
+        end
+    end
+
+    for name, enabled in pairs(self.guild.manualRaiders or {}) do
+        if enabled == true then
+            active[name] = true
+        end
+    end
+
+    return active
+end
+
+function addon:GetActiveGuildMemberEntries(includeClass)
+    local entries = {}
+    if not self.guild then
+        return entries
+    end
+
+    local active = self:GetActiveRaiderLookup()
+    for name, info in pairs(self.guild.players or {}) do
+        if active[name] then
+            entries[#entries + 1] = {
+                name = name,
+                dkp = safeNumber(info.dkp, 0),
+                earned = safeNumber(info.earned, 0),
+                spent = safeNumber(info.spent, 0),
+                class = includeClass and ((info.class and info.class ~= "") and info.class or nil) or nil,
+            }
+        end
+    end
+
+    return entries
+end
+
+function addon:GetSortedGuildRosterEntries()
+    local entries = {}
+    if not self.guild then
+        return entries
+    end
+
+    local activeLookup = self:GetActiveRaiderLookup()
+    local rosterMap = self.guildRosterMembers or {}
+
+    for name in pairs(rosterMap) do
+        local info = self.guild.players and self.guild.players[name] or nil
+        entries[#entries + 1] = {
+            name = name,
+            dkp = safeNumber(info and info.dkp, 0),
+            active = activeLookup[name] == true,
+        }
+    end
+
+    table.sort(entries, function(left, right)
+        if left.active ~= right.active then
+            return left.active
+        end
+        return left.name < right.name
+    end)
+
+    return entries
+end
+
+function addon:GetAverageActiveRaiderDkp(excludedName)
+    if not self.guild then
+        return 0, 0
+    end
+
+    local excluded = self:NormalizeName(excludedName)
+    local activeLookup = self:GetActiveRaiderLookup()
+    local totalDkp = 0
+    local count = 0
+
+    for name, isActive in pairs(activeLookup) do
+        if isActive and name ~= excluded then
+            totalDkp = totalDkp + self:GetPlayerDKP(name)
+            count = count + 1
+        end
+    end
+
+    if count <= 0 then
+        return 0, 0
+    end
+
+    return math.floor((totalDkp / count) + 0.5), count
 end
 
 function addon:GetSortedBossEntries()
@@ -671,16 +937,6 @@ function addon:SelectOptionsMember(name)
 
     if self.ui and self.ui.optionsFrame and self.ui.optionsFrame.actionsPage and self.ui.optionsFrame.actionsPage.adjustTargetInput then
         self.ui.optionsFrame.actionsPage.adjustTargetInput:SetText(self.ui.optionsSelectedMember or "")
-    end
-
-    if self.ui and self.ui.optionsFrame and self:IsOfficer() then
-        self:SetOptionsTab("actions")
-        local actionsPage = self.ui.optionsFrame.actionsPage
-        if actionsPage and actionsPage.adjustAmountInput then
-            actionsPage.adjustAmountInput:SetFocus()
-            actionsPage.adjustAmountInput:HighlightText()
-        end
-        return
     end
 
     self:RefreshOptionsUI()
@@ -824,15 +1080,27 @@ function addon:RefreshOptionsMembersPage()
 
     if selectedName then
         local selectedInfo = self.guild and self.guild.players and self.guild.players[selectedName] or nil
-        page.selectedText:SetText(string.format(
-            "Selected: %s (%d DKP | Earned %d | Spent %d)",
-            selectedName,
-            self:GetPlayerDKP(selectedName),
-            safeNumber(selectedInfo and selectedInfo.earned, 0),
-            safeNumber(selectedInfo and selectedInfo.spent, 0)
-        ))
+        if selectedInfo then
+            page.selectedText:SetText(string.format(
+                "Selected: %s (%d DKP | Earned %d | Spent %d)",
+                selectedName,
+                self:GetPlayerDKP(selectedName),
+                safeNumber(selectedInfo and selectedInfo.earned, 0),
+                safeNumber(selectedInfo and selectedInfo.spent, 0)
+            ))
+        else
+            page.selectedText:SetText("Selected player is no longer in the list.")
+        end
     else
         page.selectedText:SetText("Select a member to edit their DKP.")
+    end
+
+    if page.deleteButton then
+        if selectedName and self.guild and self.guild.players and self.guild.players[selectedName] then
+            page.deleteButton:Enable()
+        else
+            page.deleteButton:Disable()
+        end
     end
 
     local startIndex = #entries == 0 and 0 or (offset * columns + 1)
@@ -842,7 +1110,7 @@ function addon:RefreshOptionsMembersPage()
         or sortMode == "spent" and "Spent desc"
         or sortMode == "class" and (page.classSecondaryByDkp and "Class+DKP" or "Class")
         or "A-Z"
-    page.summaryText:SetText(string.format("Tracking %d players. Showing %d-%d (%s).", #entries, startIndex, endIndex, sortLabel))
+    page.summaryText:SetText(string.format("Active raiders (earned in last 30 days): %d. Showing %d-%d (%s).", #entries, startIndex, endIndex, sortLabel))
     page.quietStatusText:SetText(self:IsQuietMode() and "Quiet mode: On" or "Quiet mode: Off")
     page.toggleQuietButton:SetText(self:IsQuietMode() and "Disable Quiet" or "Enable Quiet")
 end
@@ -867,14 +1135,6 @@ function addon:RefreshOptionsActionsPage()
         page.addButton,
         page.subtractButton,
         page.setButton,
-        page.awardLabel,
-        page.awardAmountInput,
-        page.awardReasonLabel,
-        page.awardReasonInput,
-        page.awardButton,
-        page.defaultMemberDkpLabel,
-        page.defaultMemberDkpInput,
-        page.defaultMemberDkpButton,
         page.testLootButton,
         page.testLootStatusText,
     }
@@ -902,10 +1162,6 @@ function addon:RefreshOptionsActionsPage()
         row:Show()
     end
 
-    if page.defaultMemberDkpInput and not page.defaultMemberDkpInput:HasFocus() then
-        page.defaultMemberDkpInput:SetText(tostring(self:GetNewMemberDefaultDkp()))
-    end
-
     if page.testLootButton then
         if self:IsTestMode() then
             page.testLootButton:Enable()
@@ -930,6 +1186,165 @@ function addon:RefreshOptionsActionsPage()
         local line = history[offset + index - 1]
         row:SetText(line or (index == 1 and "No history recorded yet." or ""))
     end
+end
+
+function addon:AddRaider(targetName)
+    if not self:IsOfficer() then
+        self:Print("Only guild leaders and officers can add raiders.")
+        return false
+    end
+
+    if not self.guild then
+        return false
+    end
+
+    local name = self:NormalizeName(targetName)
+    if not name then
+        return false
+    end
+
+    if not self:IsGuildRosterMember(name) then
+        self:Print(string.format("%s is not currently in guild roster.", name))
+        return false
+    end
+
+    self:EnsurePlayer(name)
+    local currentDkp = self:GetPlayerDKP(name)
+    if currentDkp == 0 then
+        local averageDkp, sourceCount = self:GetAverageActiveRaiderDkp(name)
+        if averageDkp > 0 and sourceCount > 0 then
+            local txId = self:MakeTransactionId("RAIDERSEED", name)
+            if self:ApplyPlayerTransaction(name, averageDkp, averageDkp, "Active raider baseline", txId, self:GetPlayerName(), true) then
+                self:BroadcastPlayerUpdate(name, averageDkp, averageDkp, "Active raider baseline", txId, self:GetPlayerName())
+            end
+        end
+    end
+
+    self.guild.manualRaiders = self.guild.manualRaiders or {}
+    self.guild.manualRaiders[name] = true
+    self:NextRevision()
+    self:SendMessage(table.concat({ "CFG", "ADDRAIDER", name }, "\t"))
+    self:Print(string.format("Added %s to the raider list.", name))
+    return true
+end
+
+function addon:RefreshAddRaiderPopup()
+    if not self.ui or not self.ui.initialized or not self.ui.addRaiderFrame then
+        return
+    end
+
+    local frame = self.ui.addRaiderFrame
+    if not frame:IsShown() then
+        return
+    end
+
+    local allEntries = self:GetSortedGuildRosterEntries()
+    local query = string.lower(trim(frame.searchQuery or ""))
+    local entries = {}
+    if query == "" then
+        entries = allEntries
+    else
+        for _, entry in ipairs(allEntries) do
+            if string.find(string.lower(entry.name), query, 1, true) then
+                entries[#entries + 1] = entry
+            end
+        end
+    end
+    local maxOffset = math.max(0, #entries - #frame.rows)
+    local offset = math.min(frame.scrollOffset or 0, maxOffset)
+    frame.scrollOffset = offset
+
+    if frame.scrollBar then
+        frame.scrollBar:SetMinMaxValues(0, maxOffset)
+        frame.scrollBar:SetValue(offset)
+        if maxOffset > 0 then
+            frame.scrollBar:Show()
+        else
+            frame.scrollBar:Hide()
+        end
+    end
+
+    for index, button in ipairs(frame.rows) do
+        local entry = entries[offset + index]
+        if entry then
+            button.entryName = entry.name
+            if entry.active then
+                button.text:SetText(string.format("%s |cFF88FF88(Active)|r", entry.name))
+            else
+                button.text:SetText(entry.name)
+            end
+            button:Show()
+            button:Enable()
+        else
+            button.entryName = nil
+            button.text:SetText("")
+            button:Hide()
+        end
+    end
+
+    local activeCount = 0
+    for _, entry in ipairs(allEntries) do
+        if entry.active then
+            activeCount = activeCount + 1
+        end
+    end
+
+    if frame.summaryText then
+        if query == "" then
+            frame.summaryText:SetText(string.format("Guild members: %d | Active raiders: %d", #allEntries, activeCount))
+        else
+            frame.summaryText:SetText(string.format("Guild members: %d | Active raiders: %d | Matches: %d", #allEntries, activeCount, #entries))
+        end
+    end
+end
+
+function addon:ShowAddRaiderPopup()
+    self:EnsureUI()
+    self:SyncGuildRoster()
+    if self.ui.addRaiderFrame and self.ui.addRaiderFrame.searchInput then
+        self.ui.addRaiderFrame.searchQuery = ""
+        self.ui.addRaiderFrame.searchInput:SetText("")
+    end
+    self.ui.addRaiderFrame:Show()
+    self.ui.addRaiderFrame:Raise()
+    self:RefreshAddRaiderPopup()
+end
+
+function addon:DeletePlayerRecord(targetName)
+    if not self:IsOfficer() then
+        self:Print("Only guild leaders and officers can delete players.")
+        return false
+    end
+
+    if not self.guild then
+        return false
+    end
+
+    local name = self:NormalizeName(targetName)
+    if not name then
+        self:Print("Select a player to delete.")
+        return false
+    end
+
+    if not self.guild.players or not self.guild.players[name] then
+        self:Print(string.format("%s is not in the DKP roster.", name))
+        return false
+    end
+
+    self.guild.players[name] = nil
+    if self.guild.manualRaiders then
+        self.guild.manualRaiders[name] = nil
+    end
+    self:NextRevision()
+    self:AppendHistory(string.format("Player record deleted by %s: %s", self:GetPlayerName() or "unknown", name))
+
+    if self.ui and self.ui.optionsSelectedMember == name then
+        self.ui.optionsSelectedMember = nil
+    end
+
+    self:SendMessage(table.concat({ "CFG", "DELPLAYER", name }, "\t"))
+    self:Print(string.format("Deleted player record for %s.", name))
+    return true
 end
 
 function addon:RefreshOptionsBossesPage()
@@ -1061,9 +1476,46 @@ function addon:RefreshOptionsAuctionPage()
     else
         page.activeAuctionText:SetText("No active auction.")
     end
+
+    local orderedBids = {}
+    local canViewLiveBids = self.activeAuction and self.activeAuction.startedBy == self:GetPlayerName()
+    if canViewLiveBids then
+        for bidder, amount in pairs(self.activeAuction.bids or {}) do
+            orderedBids[#orderedBids + 1] = {
+                bidder = bidder,
+                amount = amount,
+            }
+        end
+    end
+
+    table.sort(orderedBids, function(left, right)
+        if left.amount == right.amount then
+            return left.bidder < right.bidder
+        end
+
+        return left.amount > right.amount
+    end)
+
+    if page.currentBidsHeader then
+        page.currentBidsHeader:SetText("Current Bids")
+    end
+
+    for index, row in ipairs(page.currentBidRows or {}) do
+        local bid = orderedBids[index]
+        if bid then
+            row:SetText(string.format("%s - %d", bid.bidder, bid.amount))
+        else
+            if index == 1 and self.activeAuction and not canViewLiveBids then
+                row:SetText("Silent bidding is active. Only the auction starter can view bids.")
+            else
+                row:SetText(index == 1 and (self.activeAuction and "No bids yet." or "No active auction.") or "")
+            end
+        end
+    end
 end
 
 function addon:ToggleOptionsUI()
+    self:EnsureItemLinkHook()
     self:EnsureUI()
 
     if self.ui.optionsFrame:IsShown() then
@@ -1076,6 +1528,7 @@ function addon:ToggleOptionsUI()
 end
 
 function addon:ShowOptionsUI()
+    self:EnsureItemLinkHook()
     self:EnsureUI()
     self.ui.optionsFrame:Show()
     self:RefreshOptionsUI()
@@ -1124,7 +1577,7 @@ function addon:EnsureUI()
 
     local controlFrame = self:CreatePanel("MapleDKPControlFrame", 430, 460, "Maple DKP Loot Control")
     controlFrame:SetPoint("CENTER", UIParent, "CENTER", -250, 30)
-    controlFrame:SetFrameStrata("DIALOG")
+    controlFrame:SetFrameStrata("FULLSCREEN_DIALOG")
     controlFrame.closeButton:SetScript("OnClick", function()
         controlFrame:Hide()
     end)
@@ -1195,9 +1648,14 @@ function addon:EnsureUI()
 
     local auctionFrame = self:CreatePanel("MapleDKPAuctionFrame", 320, 205, "Maple DKP Auction")
     auctionFrame:SetPoint("CENTER", UIParent, "CENTER", 180, 120)
-    auctionFrame:SetFrameStrata("DIALOG")
-    auctionFrame:SetToplevel(true)
-    auctionFrame.closeButton:Hide()
+    auctionFrame:SetFrameStrata("FULLSCREEN_DIALOG")
+    auctionFrame.closeButton:SetScript("OnClick", function()
+        addon.ui.auctionPopupDismissed = true
+        auctionFrame:Hide()
+        if addon.ui.raidDkpFrame then
+            addon.ui.raidDkpFrame:Hide()
+        end
+    end)
     auctionFrame.itemText = self:CreateRowText(auctionFrame, "GameFontHighlight", 280, "TOPLEFT", 16, -42)
     auctionFrame.minBidText = self:CreateRowText(auctionFrame, "GameFontHighlightSmall", 280, "TOPLEFT", 16, -72)
     auctionFrame.timerText = self:CreateRowText(auctionFrame, "GameFontHighlightSmall", 280, "TOPLEFT", 16, -92)
@@ -1230,6 +1688,7 @@ function addon:EnsureUI()
 
     local raidDkpFrame = self:CreatePanel("MapleDKPRaidDkpFrame", 320, 560, "Raid DKP")
     raidDkpFrame:SetPoint("LEFT", auctionFrame, "RIGHT", 12, 0)
+    raidDkpFrame:SetFrameStrata("FULLSCREEN_DIALOG")
     raidDkpFrame.subtitle = self:CreateRowText(raidDkpFrame, "GameFontHighlightSmall", 280, "TOPLEFT", 16, -40)
     raidDkpFrame.subtitle:SetText("")
     raidDkpFrame.rows = {}
@@ -1239,6 +1698,7 @@ function addon:EnsureUI()
 
     local noticeFrame = self:CreatePanel("MapleDKPLootNoticeFrame", 300, 170, "Boss Loot")
     noticeFrame:SetPoint("TOP", UIParent, "TOP", 0, -160)
+    noticeFrame:SetFrameStrata("FULLSCREEN_DIALOG")
     noticeFrame.closeButton:SetScript("OnClick", function()
         addon.ui.noticeExpireAt = nil
         noticeFrame:Hide()
@@ -1250,8 +1710,7 @@ function addon:EnsureUI()
 
     local historyFrame = self:CreatePanel("MapleDKPHistoryFrame", 800, 700, "DKP History")
     historyFrame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
-    historyFrame:SetFrameStrata("DIALOG")
-    historyFrame:SetToplevel(true)
+    historyFrame:SetFrameStrata("FULLSCREEN_DIALOG")
     historyFrame.closeButton:SetScript("OnClick", function()
         historyFrame:Hide()
     end)
@@ -1272,6 +1731,7 @@ function addon:EnsureUI()
 
     local optionsFrame = self:CreatePanel("MapleDKPOptionsFrame", 700, 650, "Maple DKP Options")
     optionsFrame:SetPoint("CENTER", UIParent, "CENTER", 40, 20)
+    optionsFrame:SetFrameStrata("DIALOG")
 
     optionsFrame.officerLabel = optionsFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     optionsFrame.officerLabel:SetPoint("TOPRIGHT", -36, -11)
@@ -1305,17 +1765,20 @@ function addon:EnsureUI()
     end
 
     local membersPage = createPage()
-    membersPage.quietStatusText = self:CreateRowText(membersPage, "GameFontHighlightSmall", 180, "TOPLEFT", 0, -4)
-    membersPage.toggleQuietButton = self:CreateButton(membersPage, "Enable Quiet", 100, 22, "TOPRIGHT", membersPage, "TOPRIGHT", 0, -4, function()
+    membersPage.quietStatusText = self:CreateRowText(membersPage, "GameFontHighlightSmall", 180, "TOPLEFT", 0, -2)
+    membersPage.toggleQuietButton = self:CreateButton(membersPage, "Enable Quiet", 100, 22, "TOPRIGHT", membersPage, "TOPRIGHT", 0, -2, function()
         addon:SetQuietMode(not addon:IsQuietMode())
         addon:SetOptionsStatus(addon:IsQuietMode() and "Quiet mode enabled." or "Quiet mode disabled.")
         addon:RefreshOptionsUI()
     end)
-    membersPage.summaryText = self:CreateRowText(membersPage, "GameFontHighlightSmall", 400, "TOPLEFT", 0, -34)
-    membersPage.selectedText = self:CreateRowText(membersPage, "GameFontHighlightSmall", 420, "TOPLEFT", 0, -54)
+    membersPage.summaryText = self:CreateRowText(membersPage, "GameFontHighlightSmall", 400, "TOPLEFT", 0, -26)
+    membersPage.selectedText = self:CreateRowText(membersPage, "GameFontHighlightSmall", 420, "TOPLEFT", 0, -44)
+    membersPage.addRaiderButton = self:CreateButton(membersPage, "Add Raider", 100, 22, "RIGHT", membersPage.toggleQuietButton, "LEFT", -8, 0, function()
+        addon:ShowAddRaiderPopup()
+    end)
     membersPage.sortMode = "name"
     membersPage.classSecondaryByDkp = false
-    membersPage.sortByDkpButton = self:CreateButton(membersPage, "DKP", 68, 20, "TOPRIGHT", membersPage, "TOPRIGHT", -20, -32, function()
+    membersPage.sortByDkpButton = self:CreateButton(membersPage, "DKP", 68, 20, "TOPRIGHT", membersPage, "TOPRIGHT", -20, -24, function()
         membersPage.sortMode = "dkp"
         membersPage.scrollOffset = 0
         addon:RefreshOptionsMembersPage()
@@ -1343,32 +1806,41 @@ function addon:EnsureUI()
     end)
     membersPage.sortByNameButton:ClearAllPoints()
     membersPage.sortByNameButton:SetPoint("RIGHT", membersPage.sortByEarnedButton, "LEFT", -4, 0)
+    membersPage.summaryText:ClearAllPoints()
+    membersPage.summaryText:SetPoint("TOPLEFT", membersPage, "TOPLEFT", 0, -26)
+    membersPage.summaryText:SetPoint("RIGHT", membersPage.sortByClassButton, "LEFT", -8, 0)
+    membersPage.summaryText:SetJustifyH("LEFT")
     membersPage.scrollOffset = 0
-    membersPage.columns = 2
-    membersPage.rowsPerColumn = 20
-    membersPage.scrollBar = self:CreateVerticalSlider(membersPage, 458, "TOPRIGHT", membersPage, "TOPRIGHT", 0, -82, function(value)
+    membersPage.columns = 3
+    membersPage.rowsPerColumn = 21
+    membersPage.scrollBar = self:CreateVerticalSlider(membersPage, 458, "TOPRIGHT", membersPage, "TOPRIGHT", -2, -70, function(value)
         membersPage.scrollOffset = value
         addon:RefreshOptionsMembersPage()
     end)
 
     membersPage.columnHeaders = {}
     membersPage.memberButtons = {}
-    local memberColumnWidth = 330
-    local memberColumnGap = 8
-    local memberDkpWidth = 52
-    local memberEarnedWidth = 52
-    local memberSpentWidth = 52
+    local memberColumnWidth = 208
+    local memberColumnGap = 6
+    local memberDkpWidth = 44
+    local memberEarnedWidth = 44
+    local memberSpentWidth = 44
+    local memberValueGap = 4
     for columnIndex = 1, membersPage.columns do
         local offsetX = (columnIndex - 1) * (memberColumnWidth + memberColumnGap)
-        local headerName = self:CreateRowText(membersPage, "GameFontNormalSmall", 160, "TOPLEFT", offsetX + 8, -82)
+        local headerSpentX = offsetX + memberColumnWidth - 4 - memberSpentWidth
+        local headerEarnedX = headerSpentX - memberValueGap - memberEarnedWidth
+        local headerDkpX = headerEarnedX - memberValueGap - memberDkpWidth
+        local headerNameWidth = math.max(48, headerDkpX - (offsetX + 8) - 6)
+        local headerName = self:CreateRowText(membersPage, "GameFontNormalSmall", headerNameWidth, "TOPLEFT", offsetX + 8, -70)
         headerName:SetText("Name")
-        local headerDkp = self:CreateRowText(membersPage, "GameFontNormalSmall", memberDkpWidth, "TOPLEFT", offsetX + 184, -82)
+        local headerDkp = self:CreateRowText(membersPage, "GameFontNormalSmall", memberDkpWidth, "TOPLEFT", headerDkpX, -70)
         headerDkp:SetJustifyH("RIGHT")
         headerDkp:SetText("DKP")
-        local headerEarned = self:CreateRowText(membersPage, "GameFontNormalSmall", memberEarnedWidth, "TOPLEFT", offsetX + 240, -82)
+        local headerEarned = self:CreateRowText(membersPage, "GameFontNormalSmall", memberEarnedWidth, "TOPLEFT", headerEarnedX, -70)
         headerEarned:SetJustifyH("RIGHT")
         headerEarned:SetText("Earn")
-        local headerSpent = self:CreateRowText(membersPage, "GameFontNormalSmall", memberSpentWidth, "TOPLEFT", offsetX + 296, -82)
+        local headerSpent = self:CreateRowText(membersPage, "GameFontNormalSmall", memberSpentWidth, "TOPLEFT", headerSpentX, -70)
         headerSpent:SetJustifyH("RIGHT")
         headerSpent:SetText("Spent")
         membersPage.columnHeaders[#membersPage.columnHeaders + 1] = headerName
@@ -1380,7 +1852,7 @@ function addon:EnsureUI()
     for rowIndex = 1, membersPage.rowsPerColumn do
         for columnIndex = 1, membersPage.columns do
             local offsetX = (columnIndex - 1) * (memberColumnWidth + memberColumnGap)
-            local button = self:CreateListButton(membersPage, memberColumnWidth, 18, "TOPLEFT", membersPage, "TOPLEFT", offsetX, -100 - ((rowIndex - 1) * 22), function(clickedButton)
+            local button = self:CreateListButton(membersPage, memberColumnWidth, 18, "TOPLEFT", membersPage, "TOPLEFT", offsetX, -88 - ((rowIndex - 1) * 22), function(clickedButton)
                 if clickedButton.entryName then
                     addon:SelectOptionsMember(clickedButton.entryName)
                     addon:RefreshOptionsMembersPage()
@@ -1389,15 +1861,15 @@ function addon:EnsureUI()
             -- Shrink the name text so it doesn't overlap the DKP number on the right.
             button.text:ClearAllPoints()
             button.text:SetPoint("LEFT", button, "LEFT", 4, 0)
-            button.text:SetPoint("RIGHT", button, "RIGHT", -(memberDkpWidth + memberEarnedWidth + memberSpentWidth + 14), 0)
+            button.text:SetPoint("RIGHT", button, "RIGHT", -(memberDkpWidth + memberEarnedWidth + memberSpentWidth + (memberValueGap * 2) + 8), 0)
             -- Right-aligned DKP value label.
             button.dkpText = button:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
             button.dkpText:SetWidth(memberDkpWidth)
-            button.dkpText:SetPoint("RIGHT", button, "RIGHT", -(memberEarnedWidth + memberSpentWidth + 8), 0)
+            button.dkpText:SetPoint("RIGHT", button, "RIGHT", -(memberEarnedWidth + memberSpentWidth + (memberValueGap * 2) + 4), 0)
             button.dkpText:SetJustifyH("RIGHT")
             button.earnedText = button:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
             button.earnedText:SetWidth(memberEarnedWidth)
-            button.earnedText:SetPoint("RIGHT", button, "RIGHT", -(memberSpentWidth + 6), 0)
+            button.earnedText:SetPoint("RIGHT", button, "RIGHT", -(memberSpentWidth + memberValueGap + 4), 0)
             button.earnedText:SetJustifyH("RIGHT")
             button.spentText = button:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
             button.spentText:SetWidth(memberSpentWidth)
@@ -1413,15 +1885,15 @@ function addon:EnsureUI()
     -- Inline DKP editing controls
     membersPage.editDivider = membersPage:CreateTexture(nil, "BACKGROUND")
     membersPage.editDivider:SetColorTexture(0.5, 0.5, 0.5, 0.3)
-    membersPage.editDivider:SetPoint("TOPLEFT", 0, -550)
-    membersPage.editDivider:SetSize(685, 1)
+    membersPage.editDivider:SetPoint("TOPLEFT", 0, -558)
+    membersPage.editDivider:SetSize(660, 1)
 
     membersPage.editLabel = membersPage:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    membersPage.editLabel:SetPoint("TOPLEFT", 0, -563)
+    membersPage.editLabel:SetPoint("TOPLEFT", 0, -571)
     membersPage.editLabel:SetText("Quick Edit")
 
     local editAmountLabel = membersPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    editAmountLabel:SetPoint("TOPLEFT", 0, -585)
+    editAmountLabel:SetPoint("TOPLEFT", 0, -593)
     editAmountLabel:SetText("Amount")
     membersPage.editAmountInput = self:CreateInput(membersPage, 70, 24, "LEFT", editAmountLabel, "RIGHT", 8, 0, true)
     membersPage.editAmountInput:SetMaxLetters(6)
@@ -1459,6 +1931,57 @@ function addon:EnsureUI()
         end
     end)
 
+    membersPage.deleteButton = self:CreateButton(membersPage, "Delete", 80, 22, "TOPLEFT", membersPage, "TOPLEFT", 0, -620, function()
+        local targetName = addon.ui.optionsSelectedMember
+        if addon:DeletePlayerRecord(targetName) then
+            addon:SetOptionsStatus("Deleted player record.")
+        else
+            addon:SetOptionsStatus("Could not delete player record.")
+        end
+        addon:RefreshOptionsUI()
+    end)
+    membersPage.deleteButton:Disable()
+
+    local addRaiderFrame = self:CreatePanel("MapleDKPAddRaiderFrame", 360, 560, "Add Raider")
+    addRaiderFrame:SetPoint("CENTER", optionsFrame, "CENTER", 0, 0)
+    addRaiderFrame:SetFrameStrata("FULLSCREEN_DIALOG")
+    addRaiderFrame.searchLabel = addRaiderFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    addRaiderFrame.searchLabel:SetPoint("TOPLEFT", 16, -40)
+    addRaiderFrame.searchLabel:SetText("Search")
+    addRaiderFrame.searchQuery = ""
+    addRaiderFrame.searchInput = self:CreateInput(addRaiderFrame, 220, 24, "LEFT", addRaiderFrame.searchLabel, "RIGHT", 8, 0, false)
+    addRaiderFrame.searchInput:SetMaxLetters(24)
+    addRaiderFrame.searchInput:SetScript("OnTextChanged", function(self)
+        addRaiderFrame.searchQuery = self:GetText() or ""
+        addRaiderFrame.scrollOffset = 0
+        addon:RefreshAddRaiderPopup()
+    end)
+    addRaiderFrame.summaryText = self:CreateRowText(addRaiderFrame, "GameFontHighlightSmall", 316, "TOPLEFT", 16, -70)
+    addRaiderFrame.summaryText:SetText("")
+    addRaiderFrame.scrollOffset = 0
+    addRaiderFrame.scrollBar = self:CreateVerticalSlider(addRaiderFrame, 438, "TOPRIGHT", addRaiderFrame, "TOPRIGHT", -2, -96, function(value)
+        addRaiderFrame.scrollOffset = value
+        addon:RefreshAddRaiderPopup()
+    end)
+    addRaiderFrame.rows = {}
+    for index = 1, 22 do
+        addRaiderFrame.rows[index] = self:CreateListButton(addRaiderFrame, 316, 18, "TOPLEFT", addRaiderFrame, "TOPLEFT", 16, -94 - ((index - 1) * 20), function(button)
+            if not button.entryName then
+                return
+            end
+
+            if addon:AddRaider(button.entryName) then
+                addon:SetOptionsStatus(string.format("Added %s to active raiders.", button.entryName))
+                addon:RefreshOptionsMembersPage()
+                addon:RefreshAddRaiderPopup()
+            end
+        end)
+    end
+    self:EnableMouseWheelScroll(addRaiderFrame, addRaiderFrame.scrollBar)
+    addRaiderFrame:SetScript("OnShow", function()
+        addon:RefreshAddRaiderPopup()
+    end)
+
     local actionsPage = createPage()
     actionsPage.description = self:CreateRowText(actionsPage, "GameFontHighlightSmall", 620, "TOPLEFT", 0, -4)
     actionsPage.description:SetText("Use the selected member from the Members tab, or type a name manually.")
@@ -1493,37 +2016,6 @@ function addon:EnsureUI()
     actionsPage.setButton = self:CreateButton(actionsPage, "Set", 70, 22, "LEFT", actionsPage.subtractButton, "RIGHT", 8, 0, function()
         addon:SetPlayerDKP(actionsPage.adjustTargetInput:GetText(), actionsPage.adjustAmountInput:GetText(), trim(actionsPage.adjustReasonInput:GetText()))
         addon:SetOptionsStatus("Applied DKP set adjustment.")
-        addon:RefreshOptionsUI()
-    end)
-    actionsPage.awardLabel = actionsPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    actionsPage.awardLabel:SetPoint("TOPLEFT", 0, -104)
-    actionsPage.awardLabel:SetText("Raid Award")
-    actionsPage.awardAmountInput = self:CreateInput(actionsPage, 70, 24, "LEFT", actionsPage.awardLabel, "RIGHT", 8, 0, true)
-    actionsPage.awardAmountInput:SetMaxLetters(5)
-    actionsPage.awardAmountInput:SetText("10")
-    actionsPage.awardReasonLabel = actionsPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    actionsPage.awardReasonLabel:SetPoint("LEFT", actionsPage.awardAmountInput, "RIGHT", 14, 0)
-    actionsPage.awardReasonLabel:SetText("Reason")
-    actionsPage.awardReasonInput = self:CreateInput(actionsPage, 250, 24, "LEFT", actionsPage.awardReasonLabel, "RIGHT", 8, 0, false)
-    actionsPage.awardReasonInput:SetMaxLetters(60)
-    actionsPage.awardReasonInput:SetText("Raid award")
-    actionsPage.awardButton = self:CreateButton(actionsPage, "Award", 70, 22, "LEFT", actionsPage.awardReasonInput, "RIGHT", 8, 0, function()
-        addon:AwardRaid(actionsPage.awardAmountInput:GetText(), trim(actionsPage.awardReasonInput:GetText()))
-        addon:SetOptionsStatus("Awarded raid DKP.")
-        addon:RefreshOptionsUI()
-    end)
-    actionsPage.defaultMemberDkpLabel = actionsPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    actionsPage.defaultMemberDkpLabel:SetPoint("TOPLEFT", 0, -130)
-    actionsPage.defaultMemberDkpLabel:SetText("New Member DKP")
-    actionsPage.defaultMemberDkpInput = self:CreateInput(actionsPage, 60, 24, "LEFT", actionsPage.defaultMemberDkpLabel, "RIGHT", 8, 0, true)
-    actionsPage.defaultMemberDkpInput:SetMaxLetters(6)
-    actionsPage.defaultMemberDkpInput:SetText(tostring(self:GetNewMemberDefaultDkp()))
-    actionsPage.defaultMemberDkpButton = self:CreateButton(actionsPage, "Save", 64, 22, "LEFT", actionsPage.defaultMemberDkpInput, "RIGHT", 8, 0, function()
-        if addon:SetNewMemberDefaultDkp(actionsPage.defaultMemberDkpInput:GetText()) then
-            addon:SetOptionsStatus("Updated new-member default DKP.")
-        else
-            addon:SetOptionsStatus("Could not update new-member default DKP.")
-        end
         addon:RefreshOptionsUI()
     end)
     actionsPage.syncButton = self:CreateButton(actionsPage, "Sync", 80, 22, "TOPLEFT", actionsPage, "TOPLEFT", 0, -160, function()
@@ -1623,6 +2115,13 @@ function addon:EnsureUI()
     auctionItemLabel:SetText("Item")
     auctionPage.auctionItemInput = self:CreateInput(auctionPage, 320, 24, "LEFT", auctionItemLabel, "RIGHT", 8, 0, false)
     auctionPage.auctionItemInput:SetMaxLetters(120)
+    auctionPage.auctionItemInput.allowItemLinks = true
+    auctionPage.auctionItemInput:SetScript("OnEnterPressed", function(self)
+        self:ClearFocus()
+        addon:StartAuction(auctionPage.auctionMinInput:GetText(), self:GetText(), auctionPage.auctionDurationInput:GetText())
+        addon:SetOptionsStatus("Started auction from the Auction tab.")
+        addon:RefreshOptionsUI()
+    end)
     local auctionMinLabel = auctionPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     auctionMinLabel:SetPoint("TOPLEFT", 0, -100)
     auctionMinLabel:SetText("Min Bid")
@@ -1657,6 +2156,13 @@ function addon:EnsureUI()
         addon:RefreshLeaderUI()
         addon:SetOptionsStatus("Opened the loot control panel.")
     end)
+    auctionPage.currentBidsHeader = auctionPage:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    auctionPage.currentBidsHeader:SetPoint("TOPLEFT", auctionPage.openLootButton, "BOTTOMLEFT", 0, -14)
+    auctionPage.currentBidsHeader:SetText("Current Bids")
+    auctionPage.currentBidRows = {}
+    for index = 1, 10 do
+        auctionPage.currentBidRows[index] = self:CreateRowText(auctionPage, "GameFontHighlightSmall", 620, "TOPLEFT", 0, -196 - ((index - 1) * 18))
+    end
 
     optionsFrame.membersPage = membersPage
     optionsFrame.actionsPage = actionsPage
@@ -1672,22 +2178,19 @@ function addon:EnsureUI()
         actionsPage.addButton,
         actionsPage.subtractButton,
         actionsPage.setButton,
-        actionsPage.awardButton,
-        actionsPage.defaultMemberDkpInput,
-        actionsPage.defaultMemberDkpButton,
         auctionPage.startAuctionButton,
         auctionPage.closeAuctionButton,
         auctionPage.openLootButton,
         actionsPage.adjustTargetInput,
         actionsPage.adjustAmountInput,
         actionsPage.adjustReasonInput,
-        actionsPage.awardAmountInput,
-        actionsPage.awardReasonInput,
         bossesPage.bossAmountInput,
         bossesPage.saveBossButton,
         auctionPage.auctionItemInput,
         auctionPage.auctionMinInput,
         auctionPage.auctionDurationInput,
+        membersPage.addRaiderButton,
+        membersPage.deleteButton,
     }
 
     optionsFrame:SetScript("OnShow", function()
@@ -1699,6 +2202,7 @@ function addon:EnsureUI()
     self.ui.raidDkpFrame = raidDkpFrame
     self.ui.noticeFrame = noticeFrame
     self.ui.historyFrame = historyFrame
+    self.ui.addRaiderFrame = addRaiderFrame
     self.ui.optionsFrame = optionsFrame
     self.ui.initialized = true
 end
@@ -1725,6 +2229,52 @@ function addon:GetConfiguredDuration()
 
     self.ui.controlFrame.durationInput:SetText(tostring(duration))
     return duration
+end
+
+function addon:FindInventoryItemLink(searchText)
+    local rawQuery = trim(searchText)
+    local query = string.lower(rawQuery)
+    if query == "" then
+        return nil
+    end
+
+    local exactLink = rawQuery:match("(\124c%x+\124Hitem:[^\124]+\124h%[[^%]]+%]\124h\124r)")
+    if exactLink and exactLink ~= "" then
+        return exactLink
+    end
+
+    for bagIndex = 0, 4 do
+        local slotCount = getBagSlotCount(bagIndex)
+        for slotIndex = 1, slotCount do
+            local itemLink = getBagItemLink(bagIndex, slotIndex)
+            if itemLink and itemLink ~= "" then
+                local itemName = GetItemInfo(itemLink)
+                local searchHaystack = string.lower(trim(itemName or itemLink))
+                if string.find(searchHaystack, query, 1, true) then
+                    return itemLink
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
+function addon:StartAuctionFromInventory(minBid, searchText, duration)
+    if not self:IsOfficer() then
+        self:Print("Only guild leaders and officers can start auctions.")
+        return false
+    end
+
+    local itemLink = self:FindInventoryItemLink(searchText)
+    if not itemLink then
+        self:Print("No matching inventory item found. Use part of the item name or paste an item link.")
+        return false
+    end
+
+    local hadAuction = self.activeAuction ~= nil
+    self:StartAuction(minBid, itemLink, duration)
+    return (not hadAuction) and self.activeAuction ~= nil
 end
 
 function addon:RemoveRecentLoot(itemLink)
@@ -1875,6 +2425,7 @@ function addon:RefreshAuctionPopup()
     if not self.activeAuction then
         auctionFrame:Hide()
         auctionFrame.currentAuctionId = nil
+        self.ui.auctionPopupDismissed = nil
         if self.ui.raidDkpFrame then
             self.ui.raidDkpFrame:Hide()
         end
@@ -1891,6 +2442,15 @@ function addon:RefreshAuctionPopup()
         auctionFrame.currentAuctionId = self.activeAuction.id
         auctionFrame.bidInput:SetText(tostring(self.activeAuction.minBid))
         auctionFrame.statusText:SetText("")
+        self.ui.auctionPopupDismissed = false
+    end
+
+    if self.ui.auctionPopupDismissed then
+        auctionFrame:Hide()
+        if self.ui.raidDkpFrame then
+            self.ui.raidDkpFrame:Hide()
+        end
+        return
     end
 
     auctionFrame:Show()
@@ -1907,6 +2467,7 @@ function addon:ReopenAuctionBidWindow(showNoAuctionMessage)
     end
 
     self:EnsureUI()
+    self.ui.auctionPopupDismissed = false
     self:RefreshAuctionPopup()
     return true
 end
@@ -2234,6 +2795,7 @@ function addon:EnsureDatabase()
         revision = 0,
         bosses = {},
         knownTransactions = {},
+        manualRaiders = {},
     }
 
     self.guild = self.db.guilds[guildName]
@@ -2242,6 +2804,7 @@ function addon:EnsureDatabase()
     self.guild.activityLog = self.guild.activityLog or {}
     self.guild.bosses = self.guild.bosses or {}
     self.guild.knownTransactions = self.guild.knownTransactions or {}
+    self.guild.manualRaiders = self.guild.manualRaiders or {}
     self.guild.revision = safeNumber(self.guild.revision, 0)
     self.guild.newMemberDefaultDkp = math.floor(safeNumber(self.guild.newMemberDefaultDkp, DEFAULT_NEW_MEMBER_DKP) + 0.5)
 
@@ -2394,6 +2957,41 @@ function addon:GetPlayerDKP(name)
     end
 
     return safeNumber(playerData.dkp, 0)
+end
+
+function addon:TryAutoSeedDefaultDkp(name)
+    if not self.guild then
+        return false
+    end
+
+    local playerData, normalizedName = self:EnsurePlayer(name)
+    if not playerData or not normalizedName then
+        return false
+    end
+
+    if not self:IsGuildRosterMember(normalizedName) then
+        return false
+    end
+
+    local currentDkp = safeNumber(playerData.dkp, 0)
+    local earned = safeNumber(playerData.earned, 0)
+    local spent = safeNumber(playerData.spent, 0)
+    if currentDkp ~= 0 or earned ~= 0 or spent ~= 0 then
+        return false
+    end
+
+    local seededValue = self:GetNewMemberDefaultDkp()
+    if seededValue <= 0 then
+        return false
+    end
+
+    local txId = self:MakeTransactionId("SEED", normalizedName)
+    if self:ApplyPlayerTransaction(normalizedName, seededValue, seededValue, "Auto-seed default DKP", txId, self:GetPlayerName(), true) then
+        self:BroadcastPlayerUpdate(normalizedName, seededValue, seededValue, "Auto-seed default DKP", txId, self:GetPlayerName())
+        return true
+    end
+
+    return false
 end
 
 function addon:SetPlayerValue(name, newValue)
@@ -2754,9 +3352,11 @@ end
 function addon:GetRaidGuildMembers()
     local members = {}
     local seen = {}
+    local raidMemberCount = getRaidMemberCount()
+    local partyMemberCount = getPartyMemberCount()
 
-    if IsInRaid() then
-        for index = 1, GetNumRaidMembers() do
+    if raidMemberCount > 0 then
+        for index = 1, raidMemberCount do
             local unit = "raid" .. index
             local name = self:NormalizeName(UnitName(unit))
             if name and self.guild.players[name] and not seen[name] then
@@ -2764,14 +3364,14 @@ function addon:GetRaidGuildMembers()
                 seen[name] = true
             end
         end
-    elseif GetNumPartyMembers() and GetNumPartyMembers() > 0 then
+    elseif partyMemberCount > 0 then
         local playerName = self:GetPlayerName()
         if playerName and self.guild.players[playerName] then
             members[#members + 1] = playerName
             seen[playerName] = true
         end
 
-        for index = 1, GetNumPartyMembers() do
+        for index = 1, partyMemberCount do
             local unit = "party" .. index
             local name = self:NormalizeName(UnitName(unit))
             if name and self.guild.players[name] and not seen[name] then
@@ -2793,6 +3393,8 @@ end
 function addon:GetTrackedGroupMembers()
     local members = {}
     local seen = {}
+    local raidMemberCount = getRaidMemberCount()
+    local partyMemberCount = getPartyMemberCount()
 
     local function addMember(rawName, classToken)
         local name = self:NormalizeName(rawName)
@@ -2808,13 +3410,13 @@ function addon:GetTrackedGroupMembers()
 
     addMember(UnitName("player"), select(2, UnitClass("player")))
 
-    if IsInRaid() then
-        for index = 1, GetNumRaidMembers() do
+    if raidMemberCount > 0 then
+        for index = 1, raidMemberCount do
             local unit = "raid" .. index
             addMember(UnitName(unit), select(2, UnitClass(unit)))
         end
-    elseif GetNumPartyMembers() and GetNumPartyMembers() > 0 then
-        for index = 1, GetNumPartyMembers() do
+    elseif partyMemberCount > 0 then
+        for index = 1, partyMemberCount do
             local unit = "party" .. index
             addMember(UnitName(unit), select(2, UnitClass(unit)))
         end
@@ -2833,8 +3435,11 @@ function addon:SyncTrackedGroupMembers()
 end
 
 function addon:GetGroupLeaderName()
-    if IsInRaid() then
-        for index = 1, GetNumRaidMembers() do
+    local raidMemberCount = getRaidMemberCount()
+    local partyMemberCount = getPartyMemberCount()
+
+    if raidMemberCount > 0 then
+        for index = 1, raidMemberCount do
             local raidName, _, _, _, _, _, _, _, _, isRaidLeader = GetRaidRosterInfo(index)
             if isRaidLeader then
                 return self:NormalizeName(raidName)
@@ -2842,12 +3447,12 @@ function addon:GetGroupLeaderName()
         end
     end
 
-    if GetNumPartyMembers() and GetNumPartyMembers() > 0 then
+    if partyMemberCount > 0 then
         if UnitIsPartyLeader and UnitIsPartyLeader("player") then
             return self:GetPlayerName()
         end
 
-        for index = 1, GetNumPartyMembers() do
+        for index = 1, partyMemberCount do
             if UnitIsPartyLeader and UnitIsPartyLeader("party" .. index) then
                 return self:NormalizeName(UnitName("party" .. index))
             end
@@ -2862,19 +3467,19 @@ function addon:BroadcastGroupMessage(message)
         return
     end
 
-    if IsInRaid() then
+    if getRaidMemberCount() > 0 then
         self:SendMessage(message, "RAID")
-    elseif GetNumPartyMembers() and GetNumPartyMembers() > 0 then
+    elseif getPartyMemberCount() > 0 then
         self:SendMessage(message, "PARTY")
     end
 end
 
 function addon:GetGroupChatChannel()
-    if IsInRaid() then
+    if getRaidMemberCount() > 0 then
         return "RAID"
     end
 
-    if GetNumPartyMembers and GetNumPartyMembers() and GetNumPartyMembers() > 0 then
+    if getPartyMemberCount() > 0 then
         return "PARTY"
     end
 
@@ -3008,6 +3613,14 @@ function addon:StartAuction(minBid, itemLink, duration)
 
     minBid = math.floor(safeNumber(minBid, 0) + 0.5)
     itemLink = trim(itemLink)
+
+    if itemLink ~= "" and not string.find(itemLink, "|Hitem:", 1, true) then
+        local resolvedItemLink = self:FindInventoryItemLink(itemLink)
+        if resolvedItemLink and resolvedItemLink ~= "" then
+            itemLink = resolvedItemLink
+        end
+    end
+
     duration = math.floor(safeNumber(duration, self.auctionDuration) + 0.5)
     if duration < 5 then
         duration = 5
@@ -3031,13 +3644,13 @@ function addon:StartAuction(minBid, itemLink, duration)
     }
 
     self.lastAuctionResult = nil
+    self.ui.auctionPopupDismissed = false
     self:RemoveRecentLoot(itemLink)
     self:EnsureUI()
     self:RefreshLeaderUI()
     self:RefreshAuctionPopup()
     self:RefreshLootNotice()
     local startMessage = table.concat({ "AUC", "START", auctionId, self:GetPlayerName(), tostring(minBid), itemLink, tostring(duration) }, "\t")
-    self:SendMessage(startMessage)
     self:BroadcastGroupMessage(startMessage)
     self:AnnounceAuctionStartToGroup(itemLink, minBid, duration, self:GetPlayerName())
     self:Print(string.format("Auction started for %s. Minimum bid: %d. %d seconds remaining.", itemLink, minBid, duration))
@@ -3069,6 +3682,10 @@ function addon:RegisterBid(bidder, amount, remote, auctionId)
         return false
     end
 
+    -- Some guild members can exist as uninitialized 0-DKP stubs on this client.
+    -- Seed them to default before validating a bid to avoid false 0-DKP rejection.
+    self:TryAutoSeedDefaultDkp(bidder)
+
     if self:GetPlayerDKP(bidder) < amount then
         if not remote then
             self:Print("You cannot bid more DKP than you currently have.")
@@ -3092,9 +3709,7 @@ function addon:RegisterBid(bidder, amount, remote, auctionId)
 
     if not remote then
         local bidMessage = table.concat({ "AUC", "BID", self.activeAuction.id, bidder, tostring(amount) }, "\t")
-        if self.activeAuction.startedBy == self:GetPlayerName() then
-            self:SendMessage(bidMessage)
-        else
+        if self.activeAuction.startedBy ~= self:GetPlayerName() then
             self:SendMessage(bidMessage, "WHISPER", self.activeAuction.startedBy)
         end
         self:Print(string.format("Bid submitted: %d on %s.", amount, self.activeAuction.item))
@@ -3170,7 +3785,6 @@ function addon:CloseAuction(preferredWinner)
             outcome = "no_winner",
         })
         local closeMessage = table.concat({ "AUC", "CLOSE", auctionId, self:GetPlayerName(), "", "0", item }, "\t")
-        self:SendMessage(closeMessage)
         self:BroadcastGroupMessage(closeMessage)
         self:RefreshLeaderUI()
         self:RefreshAuctionPopup()
@@ -3198,7 +3812,6 @@ function addon:CloseAuction(preferredWinner)
         end
 
         local closeMessage = table.concat({ "AUC", "CLOSE", auctionId, self:GetPlayerName(), winner, "0", item }, "\t")
-        self:SendMessage(closeMessage)
         self:BroadcastGroupMessage(closeMessage)
         self:RefreshLeaderUI()
         self:RefreshAuctionPopup()
@@ -3230,7 +3843,6 @@ function addon:CloseAuction(preferredWinner)
     end
 
     local closeMessage = table.concat({ "AUC", "CLOSE", auctionId, self:GetPlayerName(), winner, tostring(amount), item }, "\t")
-    self:SendMessage(closeMessage)
     self:BroadcastGroupMessage(closeMessage)
     self:RefreshLeaderUI()
     self:RefreshAuctionPopup()
@@ -3290,6 +3902,17 @@ function addon:SendSnapshot(targetName, requestId)
             trim(boss.zone ~= nil and boss.zone or "Custom"),
             tostring(safeNumber(boss.encounterOrder, 999)),
         }, "\t"))
+    end
+
+    for playerName, enabled in pairs(self.guild.manualRaiders or {}) do
+        if enabled == true then
+            self:SendMessage(table.concat({
+                "SNP",
+                "RAIDER",
+                snapshotId,
+                playerName,
+            }, "\t"))
+        end
     end
 
     self:SendMessage(table.concat({ "SNP", "END", snapshotId, tostring(self.guild.revision), senderName }, "\t"))
@@ -3422,6 +4045,32 @@ function addon:HandleChatMessage(prefix, message, _, sender)
         return
     end
 
+    if command == "CFG" and parts[2] == "DELPLAYER" then
+        local playerName = self:NormalizeName(parts[3])
+        if playerName and self.guild.players and self.guild.players[playerName] then
+            self.guild.players[playerName] = nil
+            if self.guild.manualRaiders then
+                self.guild.manualRaiders[playerName] = nil
+            end
+            if self.ui and self.ui.optionsSelectedMember == playerName then
+                self.ui.optionsSelectedMember = nil
+            end
+            self:NextRevision()
+        end
+        return
+    end
+
+    if command == "CFG" and parts[2] == "ADDRAIDER" then
+        local playerName = self:NormalizeName(parts[3])
+        if playerName then
+            self:EnsurePlayer(playerName)
+            self.guild.manualRaiders = self.guild.manualRaiders or {}
+            self.guild.manualRaiders[playerName] = true
+            self:NextRevision()
+        end
+        return
+    end
+
     if command == "CFG" and parts[2] == "NEWMEMBERDKP" then
         local value = math.floor(safeNumber(parts[3], 0) + 0.5)
         if value < 0 then
@@ -3467,6 +4116,10 @@ function addon:HandleChatMessage(prefix, message, _, sender)
     end
 
     if command == "AUC" then
+        if not isPlayerInCurrentGroup(self, senderName) then
+            return
+        end
+
         local auctionCommand = parts[2]
         if auctionCommand == "START" then
             self.activeAuction = {
@@ -3600,6 +4253,7 @@ function addon:HandleChatMessage(prefix, message, _, sender)
                 revision = revision,
                 players = {},
                 bosses = {},
+                manualRaiders = {},
                 newMemberDefaultDkp = safeNumber(parts[7], nil),
                 startedAt = GetTime(),
             }
@@ -3693,6 +4347,18 @@ function addon:HandleChatMessage(prefix, message, _, sender)
             return
         end
 
+        if snapshotCommand == "RAIDER" then
+            local snapshotId = trim(parts[3])
+            local playerName = self:NormalizeName(parts[4])
+            if snapshotId ~= self.pendingSnapshot.id then
+                return
+            end
+            if playerName then
+                self.pendingSnapshot.manualRaiders[playerName] = true
+            end
+            return
+        end
+
         if snapshotCommand == "END" then
             local snapshotId = trim(parts[3])
             local finishedRevision = safeNumber(parts[4], nil)
@@ -3722,6 +4388,7 @@ function addon:HandleChatMessage(prefix, message, _, sender)
             -- Boss config is officer-managed; use last-writer-wins by revision.
             if finishedRevision >= safeNumber(self.guild.revision, 0) then
                 self.guild.bosses = self.pendingSnapshot.bosses
+                self.guild.manualRaiders = self.pendingSnapshot.manualRaiders or {}
                 if self.pendingSnapshot.newMemberDefaultDkp ~= nil then
                     self.guild.newMemberDefaultDkp = math.floor(safeNumber(self.pendingSnapshot.newMemberDefaultDkp, 0) + 0.5)
                 end
@@ -3777,6 +4444,7 @@ function addon:ShowHelp()
     self:Print("/mdkp boss add NpcID Amount Boss Name")
     self:Print("/mdkp boss list")
     self:Print("/mdkp auction start MinBid ItemLinkOrName")
+    self:Print("/mdkp auction inv MinBid ItemNameOrLink (must be in your bags)")
     self:Print("/mdkp bid Amount")
     self:Print("/mdkp auction close [PlayerName] (use PlayerName to assign for free if no bids)")
     self:Print("/mdkp auction status")
@@ -3877,6 +4545,17 @@ function addon:HandleSlashCommand(message)
         if subCommand == "start" then
             local minBid, itemLink = auctionRemainder:match("^([%-]?%d+)%s+(.+)$")
             self:StartAuction(minBid, itemLink)
+            return
+        end
+
+        if subCommand == "inv" or subCommand == "bag" or subCommand == "inventory" then
+            local minBid, itemQuery = auctionRemainder:match("^([%-]?%d+)%s+(.+)$")
+            if not minBid or not itemQuery then
+                self:Print("Usage: /mdkp auction inv MinBid ItemNameOrLink")
+                return
+            end
+
+            self:StartAuctionFromInventory(minBid, itemQuery)
             return
         end
 
@@ -4052,6 +4731,15 @@ function addon:OnEvent(event, ...)
         end)
         if not uiReady then
             self:Print("UI failed to initialize: " .. trim(uiError), true)
+        end
+
+        self:EnsureItemLinkHook()
+
+        if hooksecurefunc and not self.escapeHookInstalled then
+            hooksecurefunc("CloseSpecialWindows", function()
+                addon:CloseAllAddonWindows()
+            end)
+            self.escapeHookInstalled = true
         end
 
         if C_Timer and C_Timer.After then

@@ -77,3 +77,9 @@ Maple DKP is a lightweight World of Warcraft addon for Burning Crusade Classic s
 - The default boss list is a starter set, not a complete TBC encounter catalog.
 - Sync currently uses the guild addon channel only, which keeps usage simple but assumes guild raiders are online and running the addon.
 - Loot assignment still happens through the normal WoW loot window. The addon tells the officer who won but does not assign the item automatically.
+
+## Recent patch notes
+
+- Auction addon messages are now scoped to raid or party instead of being broadcast on guild.
+- Updated clients ignore auction messages from senders who are not in the current raid or party.
+- Mixed-version caveat: if an auction starter and receiver are both on an old version, they can still exchange guild-scoped auction messages. In practice, updating officers and raid leads removes the main leak path.
