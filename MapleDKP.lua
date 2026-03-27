@@ -1769,9 +1769,14 @@ function addon:EnsureUI()
         historyFrame.scrollOffset = value
         addon:RefreshHistoryFrame()
     end)
+    self:EnableMouseWheelScroll(historyFrame, historyFrame.scrollBar)
 
     historyFrame.summaryText = self:CreateRowText(historyFrame, "GameFontHighlightSmall", 750, "TOPLEFT", 16, -40)
     historyFrame.summaryText:SetText("")
+    historyFrame.topHintText = self:CreateRowText(historyFrame, "GameFontHighlightSmall", 220, "TOPRIGHT", -28, -40)
+    historyFrame.topHintText:SetJustifyH("RIGHT")
+    historyFrame.bottomHintText = self:CreateRowText(historyFrame, "GameFontHighlightSmall", 220, "BOTTOMRIGHT", -28, 16)
+    historyFrame.bottomHintText:SetJustifyH("RIGHT")
 
     historyFrame.historyRows = {}
     for index = 1, 24 do
@@ -2401,8 +2406,40 @@ function addon:RefreshHistoryFrame()
 
     local startIndex = totalRows == 0 and 0 or math.max(1, totalRows - offset - (rowsPerPage - 1))
     local endIndex = totalRows == 0 and 0 or math.max(1, totalRows - offset)
+    local atTop = (offset == 0)
+    local atBottom = (offset >= maxOffset and totalRows > 0)
     if historyFrame.summaryText then
-        historyFrame.summaryText:SetText(string.format("Showing %d-%d of %d total entries", startIndex, endIndex, totalRows))
+        local positionLabel
+        if totalRows == 0 then
+            positionLabel = "No entries"
+        elseif atTop then
+            positionLabel = "Top (Newest)"
+        elseif atBottom then
+            positionLabel = "Bottom (Oldest)"
+        else
+            positionLabel = "Middle"
+        end
+        historyFrame.summaryText:SetText(string.format("Showing %d-%d of %d total entries | Position: %s", startIndex, endIndex, totalRows, positionLabel))
+    end
+
+    if historyFrame.topHintText then
+        if totalRows == 0 then
+            historyFrame.topHintText:SetText("")
+        elseif atTop then
+            historyFrame.topHintText:SetText("[Top Reached]")
+        else
+            historyFrame.topHintText:SetText("Top: scroll up")
+        end
+    end
+
+    if historyFrame.bottomHintText then
+        if totalRows == 0 then
+            historyFrame.bottomHintText:SetText("")
+        elseif atBottom then
+            historyFrame.bottomHintText:SetText("[Bottom Reached]")
+        else
+            historyFrame.bottomHintText:SetText("Bottom: scroll down")
+        end
     end
 end
 
