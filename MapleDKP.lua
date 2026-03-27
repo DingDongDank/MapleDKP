@@ -1022,8 +1022,7 @@ function addon:RefreshOptionsMembersPage()
     local selectedName = self.ui.optionsSelectedMember
     local columns = safeNumber(page.columns, 1)
     local rowsPerColumn = safeNumber(page.rowsPerColumn, 20)
-    local totalRows = math.ceil(#entries / columns)
-    local maxOffset = math.max(0, totalRows - rowsPerColumn)
+    local maxOffset = math.max(0, #entries - columns * rowsPerColumn)
     local offset = math.min(page.scrollOffset or 0, maxOffset)
     page.scrollOffset = offset
 
@@ -1040,7 +1039,7 @@ function addon:RefreshOptionsMembersPage()
     for _, button in ipairs(page.memberButtons) do
         local rowIndex = safeNumber(button.rowIndex, 1)
         local columnIndex = safeNumber(button.columnIndex, 1)
-        local entryIndex = ((offset + rowIndex - 1) * columns) + columnIndex
+        local entryIndex = offset + (columnIndex - 1) * rowsPerColumn + rowIndex
         local entry = entries[entryIndex]
         if entry then
             local prefix = selectedName == entry.name and "> " or ""
@@ -1872,8 +1871,8 @@ function addon:EnsureUI()
     membersPage.summaryText:SetJustifyH("LEFT")
     membersPage.scrollOffset = 0
     membersPage.columns = 3
-    membersPage.rowsPerColumn = 21
-    membersPage.scrollBar = self:CreateVerticalSlider(membersPage, 458, "TOPRIGHT", membersPage, "TOPRIGHT", -2, -70, function(value)
+    membersPage.rowsPerColumn = 16
+    membersPage.scrollBar = self:CreateVerticalSlider(membersPage, 370, "TOPRIGHT", membersPage, "TOPRIGHT", -2, -70, function(value)
         membersPage.scrollOffset = value
         addon:RefreshOptionsMembersPage()
     end)
@@ -1945,15 +1944,15 @@ function addon:EnsureUI()
     -- Inline DKP editing controls
     membersPage.editDivider = membersPage:CreateTexture(nil, "BACKGROUND")
     membersPage.editDivider:SetColorTexture(0.5, 0.5, 0.5, 0.3)
-    membersPage.editDivider:SetPoint("TOPLEFT", 0, -558)
+    membersPage.editDivider:SetPoint("TOPLEFT", 0, -448)
     membersPage.editDivider:SetSize(660, 1)
 
     membersPage.editLabel = membersPage:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    membersPage.editLabel:SetPoint("TOPLEFT", 0, -571)
+    membersPage.editLabel:SetPoint("TOPLEFT", 0, -461)
     membersPage.editLabel:SetText("Quick Edit")
 
     local editAmountLabel = membersPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    editAmountLabel:SetPoint("TOPLEFT", 0, -593)
+    editAmountLabel:SetPoint("TOPLEFT", 0, -483)
     editAmountLabel:SetText("Amount")
     membersPage.editAmountInput = self:CreateInput(membersPage, 70, 24, "LEFT", editAmountLabel, "RIGHT", 8, 0, true)
     membersPage.editAmountInput:SetMaxLetters(6)
@@ -1991,7 +1990,7 @@ function addon:EnsureUI()
         end
     end)
 
-    membersPage.deleteButton = self:CreateButton(membersPage, "Delete", 80, 22, "TOPLEFT", membersPage, "TOPLEFT", 0, -620, function()
+    membersPage.deleteButton = self:CreateButton(membersPage, "Delete", 80, 22, "TOPLEFT", membersPage, "TOPLEFT", 0, -510, function()
         local targetName = addon.ui.optionsSelectedMember
         if addon:DeletePlayerRecord(targetName) then
             addon:SetOptionsStatus("Deleted player record.")
