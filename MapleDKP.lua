@@ -2623,6 +2623,14 @@ function addon:OnUpdate(elapsed)
 
     self.ui.elapsed = 0
 
+    if self.activeAuction and self.activeAuction.startedBy == self:GetPlayerName() and self:IsOfficer() then
+        local remaining = (self.activeAuction.expiresAt or 0) - GetTime()
+        if remaining > 0 and remaining <= 10 and not self.activeAuction.tenSecondWarningSent then
+            self.activeAuction.tenSecondWarningSent = true
+            self:AnnounceGroupChat(string.format("Bidding ends in 10 seconds for %s.", self.activeAuction.item))
+        end
+    end
+
     if self.activeAuction and (self.activeAuction.expiresAt or 0) <= GetTime() and not self.activeAuction.closing then
         if self.activeAuction.startedBy == self:GetPlayerName() and self:IsOfficer() then
             self.activeAuction.closing = true
@@ -3541,11 +3549,17 @@ function addon:GetGroupChatChannel()
         return "RAID"
     end
 
-    if getPartyMemberCount() > 0 then
-        return "PARTY"
+    return nil
+end
+
+function addon:AnnounceGroupChat(message)
+    local channel = self:GetGroupChatChannel()
+    local text = trim(message)
+    if not channel or not SendChatMessage or text == "" then
+        return
     end
 
-    return nil
+    SendChatMessage("[MapleDKP] " .. text, channel)
 end
 
 function addon:AnnounceAuctionStartToGroup(itemLink, minBid, duration, lootMasterName)
@@ -3560,7 +3574,8 @@ function addon:AnnounceAuctionStartToGroup(itemLink, minBid, duration, lootMaste
     local seconds = math.floor(safeNumber(duration, 0) + 0.5)
     local sampleBid = minimum > 0 and minimum or 1
 
-    SendChatMessage(string.format("[MapleDKP] Auction started: %s | Min %d DKP | %ds", itemText, minimum, seconds), channel)
+    SendChatMessage(string.format("[MapleDKP] Up for bid: %s | Min %d DKP | Time limit: %ds", itemText, minimum, seconds), channel)
+    SendChatMessage("[MapleDKP] Bidding starts now.", channel)
     SendChatMessage(string.format("[MapleDKP] No addon? Whisper %s: bid <amount>", lootMaster), channel)
     SendChatMessage(string.format("[MapleDKP] Example: /w %s bid %d", lootMaster, sampleBid), channel)
 end
@@ -3703,6 +3718,7 @@ function addon:StartAuction(minBid, itemLink, duration)
         startedAt = time(),
         duration = duration,
         expiresAt = GetTime() + duration,
+        tenSecondWarningSent = false,
     }
 
     self.lastAuctionResult = nil
@@ -3809,6 +3825,46 @@ function addon:GetWinningBid(preferredWinner)
     return winningName, winningBid
 end
 
+function addon:GetAuctionBidAnnouncementLines(bids)
+    local orderedBids = {}
+    for bidder, amount in pairs(bids or {}) do
+        orderedBids[#orderedBids + 1] = {
+            bidder = bidder,
+            amount = math.floor(safeNumber(amount, 0) + 0.5),
+        }
+    end
+
+    if #orderedBids == 0 then
+        return {}
+    end
+
+    table.sort(orderedBids, function(left, right)
+        if left.amount == right.amount then
+            return left.bidder < right.bidder
+        end
+        return left.amount > right.amount
+    end)
+
+    local lines = {}
+    local currentLine = "Bids:"
+
+    for _, bid in ipairs(orderedBids) do
+        local entry = string.format("%s %d", bid.bidder, bid.amount)
+        local separator = (currentLine == "Bids:") and " " or ", "
+        local nextLine = currentLine .. separator .. entry
+
+        if string.len(nextLine) > 230 then
+            lines[#lines + 1] = currentLine
+            currentLine = "Bids cont: " .. entry
+        else
+            currentLine = nextLine
+        end
+    end
+
+    lines[#lines + 1] = currentLine
+    return lines
+end
+
 function addon:CloseAuction(preferredWinner)
     if not self:IsOfficer() then
         self:Print("Only guild leaders and officers can close auctions.")
@@ -3832,9 +3888,11 @@ function addon:CloseAuction(preferredWinner)
 
     local auctionId = self.activeAuction.id
     local item = self.activeAuction.item
+    local closingBids = shallowCopy(self.activeAuction.bids or {})
     local closedBy = self:GetPlayerName()
     self.activeAuction = nil
     self:EnsureUI()
+    self:AnnounceGroupChat(string.format("Bidding has stopped for %s.", item))
 
     if not winner then
         self.lastAuctionResult = string.format("No bids were submitted for %s.", item)
@@ -3848,6 +3906,7 @@ function addon:CloseAuction(preferredWinner)
         })
         local closeMessage = table.concat({ "AUC", "CLOSE", auctionId, self:GetPlayerName(), "", "0", item }, "\t")
         self:BroadcastGroupMessage(closeMessage)
+        self:AnnounceGroupChat(string.format("No valid bids received for %s.", item))
         self:RefreshLeaderUI()
         self:RefreshAuctionPopup()
         self:Print("Auction closed with no bids.")
@@ -3875,6 +3934,10 @@ function addon:CloseAuction(preferredWinner)
 
         local closeMessage = table.concat({ "AUC", "CLOSE", auctionId, self:GetPlayerName(), winner, "0", item }, "\t")
         self:BroadcastGroupMessage(closeMessage)
+        self:AnnounceGroupChat(string.format("Winner: %s won %s for free.", winner, item))
+        for _, line in ipairs(self:GetAuctionBidAnnouncementLines(closingBids)) do
+            self:AnnounceGroupChat(line)
+        end
         self:RefreshLeaderUI()
         self:RefreshAuctionPopup()
         return
@@ -3906,6 +3969,12 @@ function addon:CloseAuction(preferredWinner)
 
     local closeMessage = table.concat({ "AUC", "CLOSE", auctionId, self:GetPlayerName(), winner, tostring(amount), item }, "\t")
     self:BroadcastGroupMessage(closeMessage)
+    if applied then
+        self:AnnounceGroupChat(string.format("Winner: %s won %s for %d DKP.", winner, item, amount))
+        for _, line in ipairs(self:GetAuctionBidAnnouncementLines(closingBids)) do
+            self:AnnounceGroupChat(line)
+        end
+    end
     self:RefreshLeaderUI()
     self:RefreshAuctionPopup()
 end
