@@ -744,6 +744,12 @@ function addon:GetActiveRaiderLookup()
         end
     end
 
+    for name, enabled in pairs(self.guild.manualInactiveRaiders or {}) do
+        if enabled == true then
+            active[name] = nil
+        end
+    end
+
     return active
 end
 
@@ -1103,6 +1109,14 @@ function addon:RefreshOptionsMembersPage()
         end
     end
 
+    if page.removeRaiderButton then
+        if selectedName and self.guild and self.guild.players and self.guild.players[selectedName] then
+            page.removeRaiderButton:Enable()
+        else
+            page.removeRaiderButton:Disable()
+        end
+    end
+
     local startIndex = #entries == 0 and 0 or (offset * columns + 1)
     local endIndex = math.min(#entries, (offset + rowsPerColumn) * columns)
     local sortLabel = sortMode == "dkp" and "DKP desc"
@@ -1221,10 +1235,43 @@ function addon:AddRaider(targetName)
     end
 
     self.guild.manualRaiders = self.guild.manualRaiders or {}
+    self.guild.manualInactiveRaiders = self.guild.manualInactiveRaiders or {}
+    self.guild.manualInactiveRaiders[name] = nil
     self.guild.manualRaiders[name] = true
     self:NextRevision()
     self:SendMessage(table.concat({ "CFG", "ADDRAIDER", name }, "\t"))
     self:Print(string.format("Added %s to the raider list.", name))
+    return true
+end
+
+function addon:RemoveRaider(targetName)
+    if not self:IsOfficer() then
+        self:Print("Only guild leaders and officers can remove raiders.")
+        return false
+    end
+
+    if not self.guild then
+        return false
+    end
+
+    local name = self:NormalizeName(targetName)
+    if not name then
+        self:Print("Select a player to remove from active raiders.")
+        return false
+    end
+
+    if not self.guild.players or not self.guild.players[name] then
+        self:Print(string.format("%s is not in the DKP roster.", name))
+        return false
+    end
+
+    self.guild.manualRaiders = self.guild.manualRaiders or {}
+    self.guild.manualInactiveRaiders = self.guild.manualInactiveRaiders or {}
+    self.guild.manualRaiders[name] = nil
+    self.guild.manualInactiveRaiders[name] = true
+    self:NextRevision()
+    self:SendMessage(table.concat({ "CFG", "REMRAIDER", name }, "\t"))
+    self:Print(string.format("Removed %s from the active raider list.", name))
     return true
 end
 
@@ -1334,6 +1381,9 @@ function addon:DeletePlayerRecord(targetName)
     self.guild.players[name] = nil
     if self.guild.manualRaiders then
         self.guild.manualRaiders[name] = nil
+    end
+    if self.guild.manualInactiveRaiders then
+        self.guild.manualInactiveRaiders[name] = nil
     end
     self:NextRevision()
     self:AppendHistory(string.format("Player record deleted by %s: %s", self:GetPlayerName() or "unknown", name))
@@ -1776,6 +1826,16 @@ function addon:EnsureUI()
     membersPage.addRaiderButton = self:CreateButton(membersPage, "Add Raider", 100, 22, "RIGHT", membersPage.toggleQuietButton, "LEFT", -8, 0, function()
         addon:ShowAddRaiderPopup()
     end)
+    membersPage.removeRaiderButton = self:CreateButton(membersPage, "Remove Raider", 112, 22, "RIGHT", membersPage.addRaiderButton, "LEFT", -6, 0, function()
+        local targetName = addon.ui.optionsSelectedMember
+        if addon:RemoveRaider(targetName) then
+            addon:SetOptionsStatus("Removed player from active raiders.")
+        else
+            addon:SetOptionsStatus("Could not remove player from active raiders.")
+        end
+        addon:RefreshOptionsUI()
+    end)
+    membersPage.removeRaiderButton:Disable()
     membersPage.sortMode = "name"
     membersPage.classSecondaryByDkp = false
     membersPage.sortByDkpButton = self:CreateButton(membersPage, "DKP", 68, 20, "TOPRIGHT", membersPage, "TOPRIGHT", -20, -24, function()
@@ -2190,6 +2250,7 @@ function addon:EnsureUI()
         auctionPage.auctionMinInput,
         auctionPage.auctionDurationInput,
         membersPage.addRaiderButton,
+        membersPage.removeRaiderButton,
         membersPage.deleteButton,
     }
 
@@ -2796,6 +2857,7 @@ function addon:EnsureDatabase()
         bosses = {},
         knownTransactions = {},
         manualRaiders = {},
+        manualInactiveRaiders = {},
     }
 
     self.guild = self.db.guilds[guildName]
@@ -2805,6 +2867,7 @@ function addon:EnsureDatabase()
     self.guild.bosses = self.guild.bosses or {}
     self.guild.knownTransactions = self.guild.knownTransactions or {}
     self.guild.manualRaiders = self.guild.manualRaiders or {}
+    self.guild.manualInactiveRaiders = self.guild.manualInactiveRaiders or {}
     self.guild.revision = safeNumber(self.guild.revision, 0)
     self.guild.newMemberDefaultDkp = math.floor(safeNumber(self.guild.newMemberDefaultDkp, DEFAULT_NEW_MEMBER_DKP) + 0.5)
 
@@ -3915,6 +3978,17 @@ function addon:SendSnapshot(targetName, requestId)
         end
     end
 
+    for playerName, enabled in pairs(self.guild.manualInactiveRaiders or {}) do
+        if enabled == true then
+            self:SendMessage(table.concat({
+                "SNP",
+                "NORAIDER",
+                snapshotId,
+                playerName,
+            }, "\t"))
+        end
+    end
+
     self:SendMessage(table.concat({ "SNP", "END", snapshotId, tostring(self.guild.revision), senderName }, "\t"))
 end
 
@@ -4052,6 +4126,9 @@ function addon:HandleChatMessage(prefix, message, _, sender)
             if self.guild.manualRaiders then
                 self.guild.manualRaiders[playerName] = nil
             end
+            if self.guild.manualInactiveRaiders then
+                self.guild.manualInactiveRaiders[playerName] = nil
+            end
             if self.ui and self.ui.optionsSelectedMember == playerName then
                 self.ui.optionsSelectedMember = nil
             end
@@ -4065,7 +4142,21 @@ function addon:HandleChatMessage(prefix, message, _, sender)
         if playerName then
             self:EnsurePlayer(playerName)
             self.guild.manualRaiders = self.guild.manualRaiders or {}
+            self.guild.manualInactiveRaiders = self.guild.manualInactiveRaiders or {}
+            self.guild.manualInactiveRaiders[playerName] = nil
             self.guild.manualRaiders[playerName] = true
+            self:NextRevision()
+        end
+        return
+    end
+
+    if command == "CFG" and parts[2] == "REMRAIDER" then
+        local playerName = self:NormalizeName(parts[3])
+        if playerName then
+            self.guild.manualRaiders = self.guild.manualRaiders or {}
+            self.guild.manualInactiveRaiders = self.guild.manualInactiveRaiders or {}
+            self.guild.manualRaiders[playerName] = nil
+            self.guild.manualInactiveRaiders[playerName] = true
             self:NextRevision()
         end
         return
@@ -4254,6 +4345,7 @@ function addon:HandleChatMessage(prefix, message, _, sender)
                 players = {},
                 bosses = {},
                 manualRaiders = {},
+                manualInactiveRaiders = {},
                 newMemberDefaultDkp = safeNumber(parts[7], nil),
                 startedAt = GetTime(),
             }
@@ -4359,6 +4451,18 @@ function addon:HandleChatMessage(prefix, message, _, sender)
             return
         end
 
+        if snapshotCommand == "NORAIDER" then
+            local snapshotId = trim(parts[3])
+            local playerName = self:NormalizeName(parts[4])
+            if snapshotId ~= self.pendingSnapshot.id then
+                return
+            end
+            if playerName then
+                self.pendingSnapshot.manualInactiveRaiders[playerName] = true
+            end
+            return
+        end
+
         if snapshotCommand == "END" then
             local snapshotId = trim(parts[3])
             local finishedRevision = safeNumber(parts[4], nil)
@@ -4389,6 +4493,7 @@ function addon:HandleChatMessage(prefix, message, _, sender)
             if finishedRevision >= safeNumber(self.guild.revision, 0) then
                 self.guild.bosses = self.pendingSnapshot.bosses
                 self.guild.manualRaiders = self.pendingSnapshot.manualRaiders or {}
+                self.guild.manualInactiveRaiders = self.pendingSnapshot.manualInactiveRaiders or {}
                 if self.pendingSnapshot.newMemberDefaultDkp ~= nil then
                     self.guild.newMemberDefaultDkp = math.floor(safeNumber(self.pendingSnapshot.newMemberDefaultDkp, 0) + 0.5)
                 end
