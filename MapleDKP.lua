@@ -18,7 +18,6 @@ addon.recentBossKills = {}
 addon.recentLoot = {}
 addon.auctionDuration = 30
 addon.lastAuctionResult = nil
-addon.lastSyncRequestAt = 0
 addon.ui = {
     initialized = false,
 }
@@ -2738,12 +2737,20 @@ function addon:SetNewMemberDefaultDkp(value)
     local parsed = safeNumber(value, nil)
     if parsed == nil then
         self:Print("Usage: /mdkp defaultdkp Value")
+    auctionPage.reopenBidButton = self:CreateButton(auctionPage, "Bid Window", 100, 22, "LEFT", auctionPage.openLootButton, "RIGHT", 10, 0, function()
+        if addon:ReopenAuctionBidWindow(false) then
+            addon:SetOptionsStatus("Reopened the bid window.")
+        else
+            addon:SetOptionsStatus("There is no active auction to reopen.")
+        end
+    end)
         return false
     end
 
     local resolvedValue = math.floor(parsed + 0.5)
     if resolvedValue < 0 then
         self:Print("Default DKP cannot be negative.")
+    self:Print("/mdkp auction reopen")
         return false
     end
 
@@ -2870,12 +2877,12 @@ function addon:EnsureDatabase()
     MapleDKPDB = MapleDKPDB or {}
     MapleDKPDB.version = 1
     MapleDKPDB.guilds = MapleDKPDB.guilds or {}
-    MapleDKPDB.settings = MapleDKPDB.settings or { quiet = true, testAllLoot = false }
+    MapleDKPDB.settings = MapleDKPDB.settings or { quiet = false, testAllLoot = false }
 
     self.db = MapleDKPDB
     self.db.settings = self.db.settings or {}
     if self.db.settings.quiet == nil then
-        self.db.settings.quiet = true
+        self.db.settings.quiet = false
     end
     if self.db.settings.testAllLoot == nil then
         self.db.settings.testAllLoot = false
@@ -4035,8 +4042,7 @@ function addon:SendSnapshot(targetName, requestId)
     end
 
     local senderName = self:GetPlayerName() or "unknown"
-    local normalizedTarget = self:NormalizeName(targetName)
-    local target = normalizedTarget or ""
+    local target = trim(targetName or "guild")
     self:SendMessage(table.concat({ "SNP", "BEGIN", snapshotId, tostring(self.guild.revision), senderName, target, tostring(self:GetNewMemberDefaultDkp()) }, "\t"))
 
     for playerName, info in pairs(self.guild.players) do
@@ -4089,21 +4095,12 @@ function addon:SendSnapshot(targetName, requestId)
     end
 
     self:SendMessage(table.concat({ "SNP", "END", snapshotId, tostring(self.guild.revision), senderName }, "\t"))
-
-    local syncTarget = normalizedTarget and (" to " .. normalizedTarget) or " to guild"
-    self:Print(string.format("Snapshot sent%s (rev %d).", syncTarget, safeNumber(self.guild.revision, 0)))
 end
 
-function addon:RequestSync(force)
+function addon:RequestSync()
     if not self.guild then
         return
     end
-
-    local now = GetTime and GetTime() or time()
-    if not force and now and self.lastSyncRequestAt and (now - self.lastSyncRequestAt) < 15 then
-        return
-    end
-    self.lastSyncRequestAt = now
 
     local requestId = self:MakeTransactionId("REQSYNC", self:GetPlayerName() or "unknown")
     self:SendMessage(table.concat({ "REQSYNC", tostring(self.guild.revision), self:GetPlayerName() or "unknown", requestId }, "\t"))
@@ -4281,13 +4278,8 @@ function addon:HandleChatMessage(prefix, message, _, sender)
     end
 
     if command == "TX" and parts[2] == "PLAYER" then
-        local applied = self:ApplyPlayerTransaction(parts[5], safeNumber(parts[6], 0), safeNumber(parts[7], 0), parts[8], parts[3], parts[4], true)
-        if applied then
-            self:RefreshLeaderUI()
-            self:RefreshAuctionPopup()
-            self:RefreshHistoryFrame()
-            self:RefreshOptionsUI()
-        end
+        self:ApplyPlayerTransaction(parts[5], safeNumber(parts[6], 0), safeNumber(parts[7], 0), parts[8], parts[3], parts[4], true)
+        self:RefreshAuctionPopup()
         return
     end
 
@@ -4425,7 +4417,6 @@ function addon:HandleChatMessage(prefix, message, _, sender)
             local revision
             local declaredSender
             local targetName
-            local targetRaw
 
             if safeNumber(parts[3], nil) then
                 snapshotId = string.format("legacy:%s:%s", senderName or "unknown", tostring(time()))
@@ -4436,12 +4427,7 @@ function addon:HandleChatMessage(prefix, message, _, sender)
                 snapshotId = trim(parts[3])
                 revision = safeNumber(parts[4], 0)
                 declaredSender = self:NormalizeName(parts[5]) or senderName
-                targetRaw = string.lower(trim(parts[6]))
-                if targetRaw == "" or targetRaw == "guild" or targetRaw == "all" then
-                    targetName = nil
-                else
-                    targetName = self:NormalizeName(parts[6])
-                end
+                targetName = self:NormalizeName(parts[6])
             end
 
             if targetName and targetName ~= self:GetPlayerName() then
@@ -4622,16 +4608,9 @@ function addon:HandleChatMessage(prefix, message, _, sender)
             self.guild.knownTransactions = self.guild.knownTransactions or {}
             self.guild.knownTransactionsOrder = self.guild.knownTransactionsOrder or {}
 
-            local snapshotSender = self.pendingSnapshot.sender or "unknown"
             if mergedAny then
-                self:Print(string.format("Snapshot received from %s (rev %d). DKP changes merged.", snapshotSender, finishedRevision))
-            else
-                self:Print(string.format("Snapshot received from %s (rev %d). No newer DKP data.", snapshotSender, finishedRevision))
+                self:Print("DKP snapshot merged.")
             end
-            self:RefreshLeaderUI()
-            self:RefreshAuctionPopup()
-            self:RefreshHistoryFrame()
-            self:RefreshOptionsUI()
             self.pendingSnapshot = nil
             return
         end
@@ -5007,16 +4986,6 @@ function addon:OnEvent(event, ...)
         end
         self:SyncGuildRoster()
         self:SyncTrackedGroupMembers()
-
-        -- Guild online/offline changes are a good signal that a newer client may have
-        -- just logged in. Request a snapshot (throttled) so stale clients catch up.
-        if C_Timer and C_Timer.After then
-            C_Timer.After(1, function()
-                addon:RequestSync(false)
-            end)
-        else
-            self:RequestSync(false)
-        end
         return
     end
 
