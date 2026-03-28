@@ -2738,20 +2738,12 @@ function addon:SetNewMemberDefaultDkp(value)
     local parsed = safeNumber(value, nil)
     if parsed == nil then
         self:Print("Usage: /mdkp defaultdkp Value")
-    auctionPage.reopenBidButton = self:CreateButton(auctionPage, "Bid Window", 100, 22, "LEFT", auctionPage.openLootButton, "RIGHT", 10, 0, function()
-        if addon:ReopenAuctionBidWindow(false) then
-            addon:SetOptionsStatus("Reopened the bid window.")
-        else
-            addon:SetOptionsStatus("There is no active auction to reopen.")
-        end
-    end)
         return false
     end
 
     local resolvedValue = math.floor(parsed + 0.5)
     if resolvedValue < 0 then
         self:Print("Default DKP cannot be negative.")
-    self:Print("/mdkp auction reopen")
         return false
     end
 
