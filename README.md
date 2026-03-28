@@ -17,9 +17,9 @@ Maple DKP is a lightweight World of Warcraft addon for Burning Crusade Classic s
 ## Installation
 
 1. Put the `MapleDKP` folder inside your WoW addons directory.
-2. The folder should contain `MapleDKP.toc`, `MapleDKP.lua`, and `README.md`.
+2. The folder should contain `MapleDKP_TBC.toc`, `MapleDKP.lua`, and `README.md`.
 3. Launch the Burning Crusade Anniversary client and enable the addon on the character screen.
-4. If the client build uses a different interface number than `20504`, update the number in `MapleDKP.toc`.
+4. If the client build uses a different interface number than `20505`, update the number in `MapleDKP_TBC.toc`.
 
 ## Slash commands
 
@@ -80,6 +80,26 @@ Maple DKP is a lightweight World of Warcraft addon for Burning Crusade Classic s
 
 ## Recent patch notes
 
-- Auction addon messages are now scoped to raid or party instead of being broadcast on guild.
-- Updated clients ignore auction messages from senders who are not in the current raid or party.
-- Mixed-version caveat: if an auction starter and receiver are both on an old version, they can still exchange guild-scoped auction messages. In practice, updating officers and raid leads removes the main leak path.
+- Members page layout now keeps all controls inside the window bounds.
+- Members list remains 3 columns and now fills top-to-bottom in each column before moving left-to-right.
+- Auction announcements now post to raid chat during bidding milestones:
+  - item link, minimum bid, and time limit when auction starts
+  - explicit "bidding starts now" message
+  - 10-second warning before bidding ends
+  - bidding stopped message when auction closes
+  - winner announcement when closed
+- Winner announcement now includes a post-close recap of all bidders and bid amounts (no live bid spam during the timer).
+- DKP history window now supports mousewheel scrolling and includes clearer scroll-position indicators:
+  - top/bottom reached hints
+  - summary position label (Top/Middle/Bottom)
+- Sync reliability improvements:
+  - incoming TX updates now refresh leader, auction, history, and options views immediately
+  - sync requests are throttled to reduce spam while still allowing catch-up
+  - roster updates trigger a delayed/throttled sync request to catch up when officers come online later
+  - snapshot broadcast targeting was fixed so guild-wide sync snapshots are accepted correctly
+- Sync chat confirmations were added through normal addon chat output (visible when quiet mode is off):
+  - snapshot sent confirmation
+  - snapshot received/merged (or no-new-data) confirmation
+- Quiet mode default is now enabled on fresh/unset settings.
+- CurseForge/GitHub packaging support update:
+  - added `.pkgmeta` to exclude `MapleDKP_TBC.toc` from packaged artifacts.
