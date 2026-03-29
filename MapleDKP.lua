@@ -954,6 +954,11 @@ function addon:SelectOptionsBoss(npcId)
     self:RefreshOptionsUI()
 end
 
+function addon:SelectOptionsConflict(conflictId)
+    self.ui.optionsSelectedConflictId = trim(conflictId)
+    self:RefreshOptionsUI()
+end
+
 function addon:SetOptionsTab(tabName)
     if not self.ui.initialized or not self.ui.optionsFrame then
         return
@@ -1169,6 +1174,12 @@ function addon:RefreshOptionsActionsPage()
     if page.historyHeader then
         page.historyHeader:Show()
     end
+    if page.conflictSummaryText then
+        page.conflictSummaryText:Show()
+    end
+    if page.reviewConflictsButton then
+        page.reviewConflictsButton:Show()
+    end
     if page.historyViewButton then
         page.historyViewButton:Show()
     end
@@ -1199,6 +1210,109 @@ function addon:RefreshOptionsActionsPage()
     for index, row in ipairs(page.historyRows) do
         local line = history[offset + index - 1]
         row:SetText(line or (index == 1 and "No history recorded yet." or ""))
+    end
+
+    local conflictCount = self:GetConflictCount()
+    if page.conflictSummaryText then
+        if conflictCount > 0 then
+            page.conflictSummaryText:SetText(string.format("Conflicts: %d unresolved. Review before using Set.", conflictCount))
+        else
+            page.conflictSummaryText:SetText("Conflicts: none.")
+        end
+    end
+    if page.reviewConflictsButton then
+        if conflictCount > 0 then
+            page.reviewConflictsButton:Enable()
+        else
+            page.reviewConflictsButton:Disable()
+        end
+    end
+end
+
+function addon:RefreshOptionsConflictsPage()
+    local optionsFrame = self.ui.optionsFrame
+    if not optionsFrame or not optionsFrame.conflictsPage then
+        return
+    end
+
+    local page = optionsFrame.conflictsPage
+    local entries = self:GetConflictEntries()
+    local maxOffset = math.max(0, #entries - #page.conflictRows)
+    local offset = math.min(page.scrollOffset or 0, maxOffset)
+    page.scrollOffset = offset
+
+    if page.scrollBar then
+        page.scrollBar:SetMinMaxValues(0, maxOffset)
+        page.scrollBar:SetValue(offset)
+        if maxOffset > 0 then
+            page.scrollBar:Show()
+        else
+            page.scrollBar:Hide()
+        end
+    end
+
+    if self.ui.optionsSelectedConflictId and not self.guild.conflicts[self.ui.optionsSelectedConflictId] then
+        self.ui.optionsSelectedConflictId = nil
+    end
+    if not self.ui.optionsSelectedConflictId and entries[1] then
+        self.ui.optionsSelectedConflictId = entries[1].id
+    end
+
+    for index, button in ipairs(page.conflictRows) do
+        local entry = entries[offset + index]
+        if entry then
+            button.conflictId = entry.id
+            local marker = entry.id == self.ui.optionsSelectedConflictId and "> " or ""
+            local actor = trim(entry.actor) ~= "" and trim(entry.actor) or "unknown"
+            button.text:SetText(string.format("%s%s | %s | %s -> %d", marker, entry.playerName, string.upper(trim(entry.opType)), actor, safeNumber(entry.desiredValue, 0)))
+            button:Show()
+            button:Enable()
+        else
+            button.conflictId = nil
+            button.text:SetText("")
+            button:Hide()
+        end
+    end
+
+    local selected = self.ui.optionsSelectedConflictId and self.guild.conflicts[self.ui.optionsSelectedConflictId] or nil
+    if page.summaryText then
+        page.summaryText:SetText(string.format("Open conflicts: %d", #entries))
+    end
+    if page.selectedText then
+        if selected then
+            page.selectedText:SetText(string.format("Selected: %s | %s by %s", selected.playerName, string.upper(trim(selected.opType)), trim(selected.actor) ~= "" and trim(selected.actor) or "unknown"))
+        else
+            page.selectedText:SetText("Select a conflict to review.")
+        end
+    end
+    if page.detailText then
+        if selected then
+            page.detailText:SetText(string.format(
+                "Expected old DKP: %s\nCurrent DKP: %d\nRequested value: %d\nReason: %s",
+                selected.expectedOldValue ~= nil and tostring(selected.expectedOldValue) or "n/a",
+                safeNumber(selected.currentValue, 0),
+                safeNumber(selected.desiredValue, 0),
+                trim(selected.reason)
+            ))
+        else
+            page.detailText:SetText("No conflict selected.")
+        end
+    end
+
+    local hasSelection = selected ~= nil
+    if page.keepCurrentButton then
+        if hasSelection then page.keepCurrentButton:Enable() else page.keepCurrentButton:Disable() end
+    end
+    if page.applyIncomingButton then
+        if hasSelection then page.applyIncomingButton:Enable() else page.applyIncomingButton:Disable() end
+    end
+    if page.manualApplyButton then
+        if hasSelection then page.manualApplyButton:Enable() else page.manualApplyButton:Disable() end
+    end
+    if page.manualValueInput and selected then
+        page.manualValueInput:SetText(tostring(safeNumber(selected.currentValue, 0)))
+    elseif page.manualValueInput and not hasSelection then
+        page.manualValueInput:SetText("")
     end
 end
 
@@ -1234,14 +1348,15 @@ function addon:AddRaider(targetName)
         end
     end
 
-    self.guild.manualRaiders = self.guild.manualRaiders or {}
-    self.guild.manualInactiveRaiders = self.guild.manualInactiveRaiders or {}
-    self.guild.manualInactiveRaiders[name] = nil
-    self.guild.manualRaiders[name] = true
-    self:NextRevision()
-    self:SendMessage(table.concat({ "CFG", "ADDRAIDER", name }, "\t"))
-    self:Print(string.format("Added %s to the raider list.", name))
-    return true
+    local transaction = self:BuildConfigTransaction("addraider", name, 1, "", "", 0, "Added to active raiders", self:MakeTransactionId("CFGADDRAIDER", name), self:GetPlayerName(), time())
+    if self:ApplyConfigTransactionRecord(transaction, true, false) then
+        self:BroadcastConfigTransactionRecord(transaction)
+        self:SendMessage(table.concat({ "CFG", "ADDRAIDER", trim(transaction.txId), name }, "\t"))
+        self:Print(string.format("Added %s to the raider list.", name))
+        return true
+    end
+
+    return false
 end
 
 function addon:RemoveRaider(targetName)
@@ -1265,14 +1380,15 @@ function addon:RemoveRaider(targetName)
         return false
     end
 
-    self.guild.manualRaiders = self.guild.manualRaiders or {}
-    self.guild.manualInactiveRaiders = self.guild.manualInactiveRaiders or {}
-    self.guild.manualRaiders[name] = nil
-    self.guild.manualInactiveRaiders[name] = true
-    self:NextRevision()
-    self:SendMessage(table.concat({ "CFG", "REMRAIDER", name }, "\t"))
-    self:Print(string.format("Removed %s from the active raider list.", name))
-    return true
+    local transaction = self:BuildConfigTransaction("remraider", name, 0, "", "", 0, "Removed from active raiders", self:MakeTransactionId("CFGREMRAIDER", name), self:GetPlayerName(), time())
+    if self:ApplyConfigTransactionRecord(transaction, true, false) then
+        self:BroadcastConfigTransactionRecord(transaction)
+        self:SendMessage(table.concat({ "CFG", "REMRAIDER", trim(transaction.txId), name }, "\t"))
+        self:Print(string.format("Removed %s from the active raider list.", name))
+        return true
+    end
+
+    return false
 end
 
 function addon:RefreshAddRaiderPopup()
@@ -1378,23 +1494,15 @@ function addon:DeletePlayerRecord(targetName)
         return false
     end
 
-    self.guild.players[name] = nil
-    if self.guild.manualRaiders then
-        self.guild.manualRaiders[name] = nil
-    end
-    if self.guild.manualInactiveRaiders then
-        self.guild.manualInactiveRaiders[name] = nil
-    end
-    self:NextRevision()
-    self:AppendHistory(string.format("Player record deleted by %s: %s", self:GetPlayerName() or "unknown", name))
-
-    if self.ui and self.ui.optionsSelectedMember == name then
-        self.ui.optionsSelectedMember = nil
+    local currentValue = self:GetPlayerDKP(name)
+    local transaction = self:BuildPlayerTransaction("delete", name, 0, 0, "Manual delete", self:MakeTransactionId("DELETE", name), self:GetPlayerName(), currentValue, time())
+    if self:ApplyTransactionRecord(transaction, true, false) then
+        self:BroadcastTransactionRecord(transaction)
+        self:Print(string.format("Deleted player record for %s.", name))
+        return true
     end
 
-    self:SendMessage(table.concat({ "CFG", "DELPLAYER", name }, "\t"))
-    self:Print(string.format("Deleted player record for %s.", name))
-    return true
+    return false
 end
 
 function addon:RefreshOptionsBossesPage()
@@ -1618,6 +1726,7 @@ function addon:RefreshOptionsUI()
     self:RefreshOptionsActionsPage()
     self:RefreshOptionsBossesPage()
     self:RefreshOptionsAuctionPage()
+    self:RefreshOptionsConflictsPage()
 end
 
 function addon:EnsureUI()
@@ -1803,6 +1912,7 @@ function addon:EnsureUI()
         { key = "actions", label = "Actions", x = 118 },
         { key = "bosses", label = "Bosses", x = 220 },
         { key = "auction", label = "Auction", x = 322 },
+        { key = "conflicts", label = "Conflicts", x = 424 },
     }
 
     for _, tab in ipairs(tabNames) do
@@ -2105,17 +2215,21 @@ function addon:EnsureUI()
     end)
     actionsPage.testLootStatusText = self:CreateRowText(actionsPage, "GameFontHighlightSmall", 300, "LEFT", actionsPage.testLootButton, "RIGHT", 10, 0)
     actionsPage.testLootStatusText:SetText("")
+    actionsPage.conflictSummaryText = self:CreateRowText(actionsPage, "GameFontHighlightSmall", 360, "TOPLEFT", 0, -188)
+    actionsPage.reviewConflictsButton = self:CreateButton(actionsPage, "Review Conflicts", 120, 22, "LEFT", actionsPage.conflictSummaryText, "RIGHT", 10, 0, function()
+        addon:SetOptionsTab("conflicts")
+    end)
     actionsPage.historyHeader = actionsPage:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    actionsPage.historyHeader:SetPoint("TOPLEFT", 0, -184)
+    actionsPage.historyHeader:SetPoint("TOPLEFT", 0, -220)
     actionsPage.historyHeader:SetText("Recent History")
-    actionsPage.historyViewButton = self:CreateButton(actionsPage, "View All", 80, 22, "TOPRIGHT", actionsPage, "TOPRIGHT", -2, -178, function()
+    actionsPage.historyViewButton = self:CreateButton(actionsPage, "View All", 80, 22, "TOPRIGHT", actionsPage, "TOPRIGHT", -2, -214, function()
         addon.ui.historyFrame:Show()
         addon.ui.historyFrame:Raise()
         addon:RefreshHistoryFrame()
     end)
     actionsPage.historyRows = {}
     for index = 1, 12 do
-        actionsPage.historyRows[index] = self:CreateRowText(actionsPage, "GameFontHighlightSmall", 620, "TOPLEFT", 0, -190 - (index * 20))
+        actionsPage.historyRows[index] = self:CreateRowText(actionsPage, "GameFontHighlightSmall", 620, "TOPLEFT", 0, -226 - (index * 20))
     end
 
     local bossesPage = createPage()
@@ -2229,14 +2343,55 @@ function addon:EnsureUI()
         auctionPage.currentBidRows[index] = self:CreateRowText(auctionPage, "GameFontHighlightSmall", 620, "TOPLEFT", 0, -196 - ((index - 1) * 18))
     end
 
+    local conflictsPage = createPage()
+    conflictsPage.summaryText = self:CreateRowText(conflictsPage, "GameFontHighlightSmall", 620, "TOPLEFT", 0, -4)
+    conflictsPage.selectedText = self:CreateRowText(conflictsPage, "GameFontHighlightSmall", 620, "TOPLEFT", 0, -24)
+    conflictsPage.scrollOffset = 0
+    conflictsPage.scrollBar = self:CreateVerticalSlider(conflictsPage, 360, "TOPLEFT", conflictsPage, "TOPLEFT", 304, -48, function(value)
+        conflictsPage.scrollOffset = value
+        addon:RefreshOptionsConflictsPage()
+    end)
+    conflictsPage.conflictRows = {}
+    for index = 1, 15 do
+        conflictsPage.conflictRows[index] = self:CreateListButton(conflictsPage, 294, 18, "TOPLEFT", conflictsPage, "TOPLEFT", 0, -48 - ((index - 1) * 22), function(button)
+            if button.conflictId then
+                addon:SelectOptionsConflict(button.conflictId)
+            end
+        end)
+    end
+    self:EnableMouseWheelScroll(conflictsPage, conflictsPage.scrollBar)
+    conflictsPage.detailText = self:CreateRowText(conflictsPage, "GameFontHighlightSmall", 300, "TOPLEFT", 350, -48)
+    conflictsPage.detailText:SetJustifyH("LEFT")
+    conflictsPage.keepCurrentButton = self:CreateButton(conflictsPage, "Keep Current", 100, 22, "TOPLEFT", conflictsPage, "TOPLEFT", 350, -170, function()
+        if addon.ui.optionsSelectedConflictId then
+            addon:ResolveConflict(addon.ui.optionsSelectedConflictId, "keep")
+            addon:SetOptionsStatus("Kept the current DKP value.")
+        end
+    end)
+    conflictsPage.applyIncomingButton = self:CreateButton(conflictsPage, "Apply Incoming", 110, 22, "LEFT", conflictsPage.keepCurrentButton, "RIGHT", 8, 0, function()
+        if addon.ui.optionsSelectedConflictId then
+            addon:ResolveConflict(addon.ui.optionsSelectedConflictId, "apply")
+            addon:SetOptionsStatus("Applied the incoming conflict value.")
+        end
+    end)
+    conflictsPage.manualValueInput = self:CreateInput(conflictsPage, 80, 24, "TOPLEFT", conflictsPage, "TOPLEFT", 350, -206, true)
+    conflictsPage.manualApplyButton = self:CreateButton(conflictsPage, "Manual Set", 90, 22, "LEFT", conflictsPage.manualValueInput, "RIGHT", 8, 0, function()
+        if addon.ui.optionsSelectedConflictId then
+            addon:ResolveConflict(addon.ui.optionsSelectedConflictId, "manual", conflictsPage.manualValueInput:GetText())
+            addon:SetOptionsStatus("Applied a manual conflict resolution.")
+        end
+    end)
+
     optionsFrame.membersPage = membersPage
     optionsFrame.actionsPage = actionsPage
     optionsFrame.bossesPage = bossesPage
     optionsFrame.auctionPage = auctionPage
+    optionsFrame.conflictsPage = conflictsPage
     optionsFrame.pages.members = membersPage
     optionsFrame.pages.actions = actionsPage
     optionsFrame.pages.bosses = bossesPage
     optionsFrame.pages.auction = auctionPage
+    optionsFrame.pages.conflicts = conflictsPage
     optionsFrame.activeTab = "members"
 
     optionsFrame.officerControls = {
@@ -2246,6 +2401,10 @@ function addon:EnsureUI()
         auctionPage.startAuctionButton,
         auctionPage.closeAuctionButton,
         auctionPage.openLootButton,
+        conflictsPage.keepCurrentButton,
+        conflictsPage.applyIncomingButton,
+        conflictsPage.manualValueInput,
+        conflictsPage.manualApplyButton,
         actionsPage.adjustTargetInput,
         actionsPage.adjustAmountInput,
         actionsPage.adjustReasonInput,
@@ -2738,28 +2897,24 @@ function addon:SetNewMemberDefaultDkp(value)
     local parsed = safeNumber(value, nil)
     if parsed == nil then
         self:Print("Usage: /mdkp defaultdkp Value")
-    auctionPage.reopenBidButton = self:CreateButton(auctionPage, "Bid Window", 100, 22, "LEFT", auctionPage.openLootButton, "RIGHT", 10, 0, function()
-        if addon:ReopenAuctionBidWindow(false) then
-            addon:SetOptionsStatus("Reopened the bid window.")
-        else
-            addon:SetOptionsStatus("There is no active auction to reopen.")
-        end
-    end)
         return false
     end
 
     local resolvedValue = math.floor(parsed + 0.5)
     if resolvedValue < 0 then
         self:Print("Default DKP cannot be negative.")
-    self:Print("/mdkp auction reopen")
         return false
     end
 
-    self.guild.newMemberDefaultDkp = resolvedValue
-    self:NextRevision()
-    self:SendMessage(table.concat({ "CFG", "NEWMEMBERDKP", tostring(resolvedValue) }, "\t"))
-    self:Print(string.format("New-member default DKP set to %d.", resolvedValue))
-    return true
+    local transaction = self:BuildConfigTransaction("newmemberdkp", "guild", resolvedValue, "", "", 0, "Updated new-member default DKP", self:MakeTransactionId("CFGNEWMEMBERDKP", "guild"), self:GetPlayerName(), time())
+    if self:ApplyConfigTransactionRecord(transaction, true, false) then
+        self:BroadcastConfigTransactionRecord(transaction)
+        self:SendMessage(table.concat({ "CFG", "NEWMEMBERDKP", trim(transaction.txId), tostring(resolvedValue) }, "\t"))
+        self:Print(string.format("New-member default DKP set to %d.", resolvedValue))
+        return true
+    end
+
+    return false
 end
 
 function addon:NormalizeName(name)
@@ -2901,6 +3056,14 @@ function addon:EnsureDatabase()
         revision = 0,
         bosses = {},
         knownTransactions = {},
+        transactionLogById = {},
+        transactionOrder = {},
+        actorSequences = {},
+        replayBaselineAt = 0,
+        conflicts = {},
+        conflictOrder = {},
+        conflictCounter = 0,
+        resolvedTransactions = {},
         manualRaiders = {},
         manualInactiveRaiders = {},
     }
@@ -2911,6 +3074,14 @@ function addon:EnsureDatabase()
     self.guild.activityLog = self.guild.activityLog or {}
     self.guild.bosses = self.guild.bosses or {}
     self.guild.knownTransactions = self.guild.knownTransactions or {}
+    self.guild.transactionLogById = self.guild.transactionLogById or {}
+    self.guild.transactionOrder = self.guild.transactionOrder or {}
+    self.guild.actorSequences = self.guild.actorSequences or {}
+    self.guild.replayBaselineAt = safeNumber(self.guild.replayBaselineAt, 0)
+    self.guild.conflicts = self.guild.conflicts or {}
+    self.guild.conflictOrder = self.guild.conflictOrder or {}
+    self.guild.conflictCounter = safeNumber(self.guild.conflictCounter, 0)
+    self.guild.resolvedTransactions = self.guild.resolvedTransactions or {}
     self.guild.manualRaiders = self.guild.manualRaiders or {}
     self.guild.manualInactiveRaiders = self.guild.manualInactiveRaiders or {}
     self.guild.revision = safeNumber(self.guild.revision, 0)
@@ -2974,6 +3145,10 @@ function addon:EnsureDatabase()
             playerData.earned = safeNumber(playerData.earned, 0)
             playerData.spent = safeNumber(playerData.spent, 0)
         end
+    end
+
+    if self.guild.replayBaselineAt <= 0 then
+        self.guild.replayBaselineAt = time()
     end
 
     return true
@@ -3205,6 +3380,36 @@ function addon:FormatActivityEntry(entry)
         )
     end
 
+    if entryType == "CONFLICT" then
+        return string.format(
+            "%s CONFLICT %s by %s [%s]",
+            stamp,
+            trim(entry.target),
+            trim(entry.actor) ~= "" and trim(entry.actor) or "unknown",
+            trim(entry.reason)
+        )
+    end
+
+    if entryType == "PLAYER_DELETE" then
+        return string.format(
+            "%s DEL %s by %s [%s]",
+            stamp,
+            trim(entry.target),
+            trim(entry.actor) ~= "" and trim(entry.actor) or "unknown",
+            trim(entry.reason)
+        )
+    end
+
+    if entryType == "CONFLICT_RESOLVED" then
+        return string.format(
+            "%s CONFLICT RESOLVED %s by %s [%s]",
+            stamp,
+            trim(entry.target),
+            trim(entry.actor) ~= "" and trim(entry.actor) or "unknown",
+            trim(entry.reason)
+        )
+    end
+
     return string.format("%s %s", stamp, trim(entry.reason))
 end
 
@@ -3214,6 +3419,18 @@ function addon:NextRevision()
 end
 
 function addon:MakeTransactionId(kind, target)
+    local actor = self:GetPlayerName() or "unknown"
+    local sequence = self:NextActorSequence(actor)
+    return table.concat({
+        kind,
+        actor,
+        target or "guild",
+        tostring(sequence),
+        tostring(time()),
+    }, ":")
+end
+
+function addon:MakeConfigTransactionId(kind, target)
     return table.concat({
         kind,
         self:GetPlayerName() or "unknown",
@@ -3221,6 +3438,27 @@ function addon:MakeTransactionId(kind, target)
         tostring(time()),
         tostring(math.random(1000, 9999)),
     }, ":")
+end
+
+function addon:NextActorSequence(actor)
+    if not self.guild then
+        return 0
+    end
+
+    actor = self:NormalizeName(actor) or "unknown"
+    self.guild.actorSequences = self.guild.actorSequences or {}
+    local nextValue = safeNumber(self.guild.actorSequences[actor], 0) + 1
+    self.guild.actorSequences[actor] = nextValue
+    return nextValue
+end
+
+function addon:GetActorSequence(actor)
+    if not self.guild then
+        return 0
+    end
+
+    actor = self:NormalizeName(actor) or "unknown"
+    return safeNumber(self.guild.actorSequences and self.guild.actorSequences[actor], 0)
 end
 
 function addon:RegisterTransaction(txId)
@@ -3237,6 +3475,627 @@ end
 
 function addon:HasSeenTransaction(txId)
     return self.guild and self.guild.knownTransactions and self.guild.knownTransactions[txId]
+end
+
+function addon:BuildPlayerTransaction(opType, targetName, delta, newValue, reason, txId, actor, expectedOldValue, createdAt)
+    local normalizedTarget = self:NormalizeName(targetName)
+    local normalizedActor = self:NormalizeName(actor) or self:GetPlayerName() or "unknown"
+    local parsedTxId = trim(txId)
+    local storedAt = safeNumber(createdAt, time())
+
+    if parsedTxId == "" then
+        parsedTxId = self:MakeTransactionId(string.upper(trim(opType) ~= "" and opType or "TX"), normalizedTarget or "guild")
+    end
+
+    local sequence = 0
+    local embeddedActor = string.match(parsedTxId, "^[^:]+:([^:]+):")
+    local embeddedSequence = string.match(parsedTxId, "^[^:]+:[^:]+:[^:]+:(%d+):")
+    if embeddedActor and embeddedActor ~= "" then
+        normalizedActor = self:NormalizeName(embeddedActor) or normalizedActor
+    end
+    if embeddedSequence then
+        sequence = safeNumber(embeddedSequence, 0)
+    end
+
+    return {
+        recordType = "player",
+        txId = parsedTxId,
+        opType = string.lower(trim(opType) ~= "" and opType or "add"),
+        actor = normalizedActor,
+        actorSeq = sequence,
+        target = normalizedTarget,
+        delta = math.floor(safeNumber(delta, 0) + 0.5),
+        desiredValue = math.floor(safeNumber(newValue, 0) + 0.5),
+        expectedOldValue = expectedOldValue ~= nil and math.floor(safeNumber(expectedOldValue, 0) + 0.5) or nil,
+        reason = trim(reason),
+        createdAt = storedAt,
+    }
+end
+
+function addon:BuildConfigTransaction(opType, targetName, value, label, zone, encounterOrder, reason, txId, actor, createdAt)
+    local normalizedActor = self:NormalizeName(actor) or self:GetPlayerName() or "unknown"
+    local normalizedTarget = trim(targetName)
+    local parsedTxId = trim(txId)
+    local storedAt = safeNumber(createdAt, time())
+
+    if parsedTxId == "" then
+        parsedTxId = self:MakeTransactionId(string.upper(trim(opType) ~= "" and opType or "CFG"), normalizedTarget ~= "" and normalizedTarget or "guild")
+    end
+
+    local sequence = 0
+    local embeddedActor = string.match(parsedTxId, "^[^:]+:([^:]+):")
+    local embeddedSequence = string.match(parsedTxId, "^[^:]+:[^:]+:[^:]+:(%d+):")
+    if embeddedActor and embeddedActor ~= "" then
+        normalizedActor = self:NormalizeName(embeddedActor) or normalizedActor
+    end
+    if embeddedSequence then
+        sequence = safeNumber(embeddedSequence, 0)
+    end
+
+    if string.lower(trim(opType)) == "addraider" or string.lower(trim(opType)) == "remraider" then
+        normalizedTarget = self:NormalizeName(targetName)
+    elseif normalizedTarget == "" then
+        normalizedTarget = "guild"
+    end
+
+    return {
+        recordType = "config",
+        txId = parsedTxId,
+        opType = string.lower(trim(opType)),
+        actor = normalizedActor,
+        actorSeq = sequence,
+        target = normalizedTarget,
+        value = math.floor(safeNumber(value, 0) + 0.5),
+        label = trim(label),
+        zone = trim(zone),
+        encounterOrder = safeNumber(encounterOrder, 999),
+        reason = trim(reason),
+        createdAt = storedAt,
+    }
+end
+
+function addon:RecordTransaction(transaction)
+    if not self.guild or type(transaction) ~= "table" then
+        return false
+    end
+
+    local txId = trim(transaction.txId)
+    if txId == "" or self.guild.transactionLogById[txId] then
+        return false
+    end
+
+    self.guild.transactionLogById[txId] = transaction
+    self.guild.transactionOrder[#self.guild.transactionOrder + 1] = txId
+    self:RegisterTransaction(txId)
+
+    local actor = self:NormalizeName(transaction.actor) or "unknown"
+    local actorSeq = safeNumber(transaction.actorSeq, 0)
+    if actorSeq > self:GetActorSequence(actor) then
+        self.guild.actorSequences[actor] = actorSeq
+    end
+
+    while #self.guild.transactionOrder > 1200 do
+        local oldest = table.remove(self.guild.transactionOrder, 1)
+        self.guild.transactionLogById[oldest] = nil
+    end
+
+    return true
+end
+
+function addon:GetSortedTransactions()
+    local entries = {}
+    if not self.guild then
+        return entries
+    end
+
+    for _, txId in ipairs(self.guild.transactionOrder or {}) do
+        local transaction = self.guild.transactionLogById and self.guild.transactionLogById[txId]
+        if transaction then
+            entries[#entries + 1] = transaction
+        end
+    end
+
+    table.sort(entries, function(left, right)
+        local leftAt = safeNumber(left.createdAt, 0)
+        local rightAt = safeNumber(right.createdAt, 0)
+        if leftAt == rightAt then
+            local leftActor = trim(left.actor)
+            local rightActor = trim(right.actor)
+            if leftActor == rightActor then
+                local leftSeq = safeNumber(left.actorSeq, 0)
+                local rightSeq = safeNumber(right.actorSeq, 0)
+                if leftSeq == rightSeq then
+                    return trim(left.txId) < trim(right.txId)
+                end
+
+                return leftSeq < rightSeq
+            end
+
+            return leftActor < rightActor
+        end
+
+        return leftAt < rightAt
+    end)
+
+    return entries
+end
+
+function addon:GetConflictEntries()
+    local entries = {}
+    if not self.guild then
+        return entries
+    end
+
+    for _, conflictId in ipairs(self.guild.conflictOrder or {}) do
+        local conflict = self.guild.conflicts and self.guild.conflicts[conflictId]
+        if conflict and trim(conflict.status) ~= "resolved" then
+            entries[#entries + 1] = conflict
+        end
+    end
+
+    table.sort(entries, function(left, right)
+        return safeNumber(left.detectedAt, 0) > safeNumber(right.detectedAt, 0)
+    end)
+
+    return entries
+end
+
+function addon:GetConflictCount()
+    return #self:GetConflictEntries()
+end
+
+function addon:CreateConflict(transaction, currentValue, reason)
+    if not self.guild or type(transaction) ~= "table" then
+        return nil
+    end
+
+    if self.guild.resolvedTransactions and self.guild.resolvedTransactions[trim(transaction.txId)] then
+        return nil
+    end
+
+    local existingId = trim(transaction.txId)
+    for _, conflictId in ipairs(self.guild.conflictOrder or {}) do
+        local existing = self.guild.conflicts and self.guild.conflicts[conflictId]
+        if existing and trim(existing.txId) == existingId and trim(existing.status) ~= "resolved" then
+            return existing
+        end
+    end
+
+    self.guild.conflictCounter = safeNumber(self.guild.conflictCounter, 0) + 1
+    local conflictId = string.format("CF:%s:%d", self:GetPlayerName() or "unknown", self.guild.conflictCounter)
+    local conflict = {
+        id = conflictId,
+        txId = trim(transaction.txId),
+        actor = trim(transaction.actor),
+        playerName = trim(transaction.target),
+        opType = trim(transaction.opType),
+        delta = safeNumber(transaction.delta, 0),
+        desiredValue = safeNumber(transaction.desiredValue, 0),
+        expectedOldValue = transaction.expectedOldValue,
+        currentValue = safeNumber(currentValue, 0),
+        reason = trim(reason),
+        detectedAt = time(),
+        status = "open",
+        createdAt = safeNumber(transaction.createdAt, time()),
+    }
+
+    self.guild.conflicts[conflictId] = conflict
+    self.guild.conflictOrder[#self.guild.conflictOrder + 1] = conflictId
+    self:AppendHistory(string.format("Conflict for %s from %s [%s]", conflict.playerName, conflict.actor ~= "" and conflict.actor or "unknown", conflict.reason))
+    self:AppendActivity({
+        type = "CONFLICT",
+        actor = conflict.actor,
+        target = conflict.playerName,
+        oldValue = conflict.currentValue,
+        newValue = conflict.desiredValue,
+        reason = conflict.reason,
+        txId = conflict.txId,
+    })
+
+    return conflict
+end
+
+function addon:MarkTransactionResolved(resolvedTxId, action, actor)
+    if not self.guild or not resolvedTxId or resolvedTxId == "" then
+        return
+    end
+
+    self.guild.resolvedTransactions = self.guild.resolvedTransactions or {}
+    self.guild.resolvedTransactions[resolvedTxId] = {
+        action = trim(action),
+        actor = trim(actor),
+        at = time(),
+    }
+
+    for _, conflictId in ipairs(self.guild.conflictOrder or {}) do
+        local conflict = self.guild.conflicts and self.guild.conflicts[conflictId]
+        if conflict and trim(conflict.txId) == trim(resolvedTxId) and trim(conflict.status) ~= "resolved" then
+            conflict.status = "resolved"
+            conflict.resolvedAt = time()
+            conflict.resolution = trim(action)
+            conflict.resolvedBy = trim(actor)
+        end
+    end
+end
+
+function addon:BuildConflictResolutionTransaction(conflict, action, resolvedValue)
+    if type(conflict) ~= "table" then
+        return nil
+    end
+
+    local playerName = self:NormalizeName(conflict.playerName)
+    if not playerName then
+        return nil
+    end
+
+    local transaction = self:BuildPlayerTransaction(
+        "resolve",
+        playerName,
+        0,
+        safeNumber(resolvedValue, self:GetPlayerDKP(playerName)),
+        "Conflict resolution",
+        self:MakeTransactionId("RESOLVE", playerName),
+        self:GetPlayerName(),
+        nil,
+        time()
+    )
+    transaction.resolvedTxId = trim(conflict.txId)
+    transaction.resolutionAction = trim(action)
+    return transaction
+end
+
+function addon:GetActorSequenceSummary()
+    local summary = {}
+    if not self.guild then
+        return summary
+    end
+
+    for actor, sequence in pairs(self.guild.actorSequences or {}) do
+        summary[self:NormalizeName(actor) or actor] = safeNumber(sequence, 0)
+    end
+
+    return summary
+end
+
+function addon:GetReplayableActorSequenceSummary()
+    local summary = {}
+    if not self.guild then
+        return summary
+    end
+
+    for _, transaction in ipairs(self:GetSortedTransactions()) do
+        local actorName = self:NormalizeName(transaction.actor)
+        local actorSeq = safeNumber(transaction.actorSeq, 0)
+        if actorName and actorSeq > safeNumber(summary[actorName], 0) then
+            summary[actorName] = actorSeq
+        end
+    end
+
+    return summary
+end
+
+function addon:SendTransactionsForActor(targetName, actor, afterSequence)
+    if not self.guild then
+        return 0
+    end
+
+    targetName = self:NormalizeName(targetName)
+    actor = self:NormalizeName(actor)
+    if not targetName or not actor then
+        return 0
+    end
+
+    local sent = 0
+    for _, transaction in ipairs(self:GetSortedTransactions()) do
+        if self:NormalizeName(transaction.actor) == actor and safeNumber(transaction.actorSeq, 0) > safeNumber(afterSequence, 0) then
+            if trim(transaction.recordType) == "config" then
+                self:BroadcastConfigTransactionRecord(transaction, "WHISPER", targetName)
+            else
+                self:BroadcastTransactionRecord(transaction, "WHISPER", targetName)
+            end
+            sent = sent + 1
+        end
+    end
+
+    return sent
+end
+
+function addon:SyncActorSequencesWithPeer(peerName, remoteActorSequences)
+    if not self.guild then
+        return 0, 0
+    end
+
+    peerName = self:NormalizeName(peerName)
+    if not peerName then
+        return 0, 0
+    end
+
+    local requested = 0
+    local pushed = 0
+    local localSequences = self:GetActorSequenceSummary()
+    local replayableSequences = self:GetReplayableActorSequenceSummary()
+    local actors = {}
+
+    for actorName in pairs(localSequences) do
+        actors[actorName] = true
+    end
+    for actorName in pairs(remoteActorSequences or {}) do
+        actors[self:NormalizeName(actorName) or actorName] = true
+    end
+
+    for actorName in pairs(actors) do
+        local localSequence = safeNumber(localSequences[actorName], 0)
+        local remoteSequence = safeNumber(remoteActorSequences and remoteActorSequences[actorName], 0)
+        if remoteSequence > localSequence then
+            self:SendMessage(table.concat({ "TXREQ", actorName, tostring(localSequence) }, "\t"), "WHISPER", peerName)
+            requested = requested + 1
+        elseif safeNumber(replayableSequences[actorName], 0) > remoteSequence then
+            pushed = pushed + self:SendTransactionsForActor(peerName, actorName, remoteSequence)
+        end
+    end
+
+    return requested, pushed
+end
+
+function addon:ResolveConflict(conflictId, action, manualValue)
+    if not self.guild or not self.guild.conflicts then
+        return false
+    end
+
+    local conflict = self.guild.conflicts[conflictId]
+    if not conflict or trim(conflict.status) == "resolved" then
+        return false
+    end
+
+    local playerName = self:NormalizeName(conflict.playerName)
+    if not playerName then
+        return false
+    end
+
+    local currentValue = self:GetPlayerDKP(playerName)
+    local resolutionTx
+    if action == "apply" then
+        local tx = self:BuildPlayerTransaction(conflict.opType, playerName, conflict.delta, conflict.desiredValue, conflict.reason, self:MakeTransactionId("RESOLVE", playerName), self:GetPlayerName(), currentValue, time())
+        tx.opType = "set"
+        tx.desiredValue = safeNumber(conflict.desiredValue, currentValue)
+        tx.expectedOldValue = currentValue
+        self:ApplyTransactionRecord(tx, true, true)
+        self:BroadcastTransactionRecord(tx)
+        resolutionTx = self:BuildConflictResolutionTransaction(conflict, action, tx.desiredValue)
+    elseif action == "manual" then
+        local resolvedValue = math.floor(safeNumber(manualValue, currentValue) + 0.5)
+        local tx = self:BuildPlayerTransaction("set", playerName, resolvedValue - currentValue, resolvedValue, "Conflict resolution", self:MakeTransactionId("RESOLVE", playerName), self:GetPlayerName(), currentValue, time())
+        self:ApplyTransactionRecord(tx, true, true)
+        self:BroadcastTransactionRecord(tx)
+        resolutionTx = self:BuildConflictResolutionTransaction(conflict, action, resolvedValue)
+    elseif action == "keep" then
+        resolutionTx = self:BuildConflictResolutionTransaction(conflict, action, currentValue)
+    else
+        return false
+    end
+
+    if resolutionTx then
+        self:ApplyTransactionRecord(resolutionTx, true, false)
+        self:BroadcastTransactionRecord(resolutionTx)
+    end
+
+    conflict.status = "resolved"
+    conflict.resolvedAt = time()
+    conflict.resolution = trim(action)
+    conflict.resolvedBy = self:GetPlayerName() or "unknown"
+    self:AppendHistory(string.format("Conflict resolved for %s by %s (%s)", playerName, conflict.resolvedBy, trim(action)))
+    self:RefreshHistoryFrame()
+    self:RefreshOptionsUI()
+    return true
+end
+
+function addon:ApplyConfigTransactionRecord(transaction, silent, fromSync)
+    if not self.guild or type(transaction) ~= "table" then
+        return false
+    end
+
+    local txId = trim(transaction.txId)
+    local opType = string.lower(trim(transaction.opType))
+    local targetName = trim(transaction.target)
+    if txId == "" or targetName == "" then
+        return false
+    end
+
+    if self.guild.transactionLogById and self.guild.transactionLogById[txId] then
+        return false
+    end
+
+    self:RecordTransaction(transaction)
+    self.guild.manualRaiders = self.guild.manualRaiders or {}
+    self.guild.manualInactiveRaiders = self.guild.manualInactiveRaiders or {}
+
+    if opType == "boss" then
+        local npcId = tostring(safeNumber(targetName, 0))
+        if npcId == "0" then
+            return false
+        end
+
+        local existing = self.guild.bosses[npcId] or DEFAULT_BOSSES[npcId] or {}
+        local zone = trim(transaction.zone)
+        if zone == "" then
+            zone = trim(existing.zone ~= nil and existing.zone or "Custom")
+        end
+
+        self.guild.bosses[npcId] = {
+            amount = math.floor(safeNumber(transaction.value, 0) + 0.5),
+            name = trim(transaction.label),
+            zone = zone,
+            encounterOrder = safeNumber(transaction.encounterOrder, safeNumber(existing.encounterOrder, 999)),
+        }
+        self:NextRevision()
+        self:AppendHistory(string.format("Boss %s (%s) -> %d by %s [%s]", trim(transaction.label), npcId, safeNumber(transaction.value, 0), transaction.actor or "unknown", trim(transaction.reason)))
+        return true
+    end
+
+    if opType == "addraider" then
+        local playerName = self:NormalizeName(targetName)
+        if not playerName then
+            return false
+        end
+
+        self:EnsurePlayer(playerName)
+        self.guild.manualInactiveRaiders[playerName] = nil
+        self.guild.manualRaiders[playerName] = true
+        self:NextRevision()
+        self:AppendHistory(string.format("Raider added: %s by %s [%s]", playerName, transaction.actor or "unknown", trim(transaction.reason)))
+        return true
+    end
+
+    if opType == "remraider" then
+        local playerName = self:NormalizeName(targetName)
+        if not playerName then
+            return false
+        end
+
+        self.guild.manualRaiders[playerName] = nil
+        self.guild.manualInactiveRaiders[playerName] = true
+        self:NextRevision()
+        self:AppendHistory(string.format("Raider removed: %s by %s [%s]", playerName, transaction.actor or "unknown", trim(transaction.reason)))
+        return true
+    end
+
+    if opType == "newmemberdkp" then
+        self.guild.newMemberDefaultDkp = math.max(0, math.floor(safeNumber(transaction.value, 0) + 0.5))
+        self:NextRevision()
+        self:AppendHistory(string.format("New-member default DKP -> %d by %s [%s]", self.guild.newMemberDefaultDkp, transaction.actor or "unknown", trim(transaction.reason)))
+        return true
+    end
+
+    return false
+end
+
+function addon:ApplyTransactionRecord(transaction, silent, fromSync)
+    if not self.guild or type(transaction) ~= "table" then
+        return false
+    end
+
+    if trim(transaction.recordType) == "config" then
+        return self:ApplyConfigTransactionRecord(transaction, silent, fromSync)
+    end
+
+    local targetName = self:NormalizeName(transaction.target)
+    local txId = trim(transaction.txId)
+    local opType = string.lower(trim(transaction.opType))
+    if not targetName or txId == "" then
+        return false
+    end
+
+    if self.guild.transactionLogById and self.guild.transactionLogById[txId] then
+        return false
+    end
+
+    if opType == "resolve" then
+        self:RecordTransaction(transaction)
+        self:MarkTransactionResolved(trim(transaction.resolvedTxId), trim(transaction.resolutionAction), transaction.actor or self:GetPlayerName() or "unknown")
+        self:NextRevision()
+        self:AppendHistory(string.format("Conflict %s resolved by %s (%s)", trim(transaction.resolvedTxId), transaction.actor or "unknown", trim(transaction.resolutionAction)))
+        self:AppendActivity({
+            type = "CONFLICT_RESOLVED",
+            actor = transaction.actor,
+            target = targetName,
+            reason = trim(transaction.resolutionAction),
+            txId = txId,
+        })
+        return true
+    end
+
+    local existingPlayerData = self.guild.players and self.guild.players[targetName] or nil
+    local oldValue = safeNumber(existingPlayerData and existingPlayerData.dkp, 0)
+    local desiredValue
+    local appliedDelta
+
+    if opType == "delete" then
+        local expectedOldValue = transaction.expectedOldValue
+        if expectedOldValue ~= nil and safeNumber(expectedOldValue, oldValue) ~= oldValue then
+            self:RecordTransaction(transaction)
+            self:CreateConflict(transaction, oldValue, string.format("Expected %d before delete, found %d.", safeNumber(expectedOldValue, oldValue), oldValue))
+            if not silent then
+                self:Print(string.format("Conflict detected for %s delete. Review it in the Conflicts tab.", targetName))
+            end
+            return false
+        end
+
+        self:RecordTransaction(transaction)
+        if self.guild.players then
+            self.guild.players[targetName] = nil
+        end
+        if self.guild.manualRaiders then
+            self.guild.manualRaiders[targetName] = nil
+        end
+        if self.guild.manualInactiveRaiders then
+            self.guild.manualInactiveRaiders[targetName] = nil
+        end
+        if self.ui and self.ui.optionsSelectedMember == targetName then
+            self.ui.optionsSelectedMember = nil
+        end
+        self:NextRevision()
+        self:AppendHistory(string.format("Deleted player record for %s by %s [%s]", targetName, transaction.actor or "unknown", trim(transaction.reason)))
+        self:AppendActivity({
+            type = "PLAYER_DELETE",
+            actor = transaction.actor,
+            target = targetName,
+            oldValue = oldValue,
+            newValue = 0,
+            reason = transaction.reason,
+            txId = txId,
+        })
+        return true
+    end
+
+    local playerData = self:EnsurePlayer(targetName)
+    if not playerData then
+        return false
+    end
+
+    if opType == "set" then
+        local expectedOldValue = transaction.expectedOldValue
+        if expectedOldValue ~= nil and safeNumber(expectedOldValue, oldValue) ~= oldValue then
+            self:RecordTransaction(transaction)
+            self:CreateConflict(transaction, oldValue, string.format("Expected %d before set, found %d.", safeNumber(expectedOldValue, oldValue), oldValue))
+            if not silent then
+                self:Print(string.format("Conflict detected for %s. Review it in the Conflicts tab.", targetName))
+            end
+            return false
+        end
+
+        desiredValue = math.floor(safeNumber(transaction.desiredValue, oldValue) + 0.5)
+    else
+        desiredValue = oldValue + math.floor(safeNumber(transaction.delta, 0) + 0.5)
+    end
+
+    appliedDelta = desiredValue - oldValue
+    playerData.dkp = desiredValue
+    if appliedDelta > 0 then
+        playerData.earned = safeNumber(playerData.earned, 0) + appliedDelta
+    elseif appliedDelta < 0 then
+        playerData.spent = safeNumber(playerData.spent, 0) + math.abs(appliedDelta)
+    end
+    playerData.updatedAt = safeNumber(transaction.createdAt, time())
+
+    self:RecordTransaction(transaction)
+    self:NextRevision()
+    self:AppendHistory(string.format("%s -> %s (%+d) by %s [%s]", targetName, desiredValue, appliedDelta, transaction.actor or "unknown", trim(transaction.reason)))
+    self:AppendActivity({
+        type = fromSync and "PLAYER_TX_SYNC" or "PLAYER_TX",
+        actor = transaction.actor,
+        target = targetName,
+        delta = appliedDelta,
+        oldValue = oldValue,
+        newValue = desiredValue,
+        reason = transaction.reason,
+        txId = txId,
+    })
+
+    if not silent then
+        self:Print(string.format("%s now has %d DKP (%+d).", targetName, desiredValue, appliedDelta))
+    end
+
+    return true
 end
 
 function addon:SendMessage(message, channel, targetName)
@@ -3268,66 +4127,59 @@ function addon:SendMessage(message, channel, targetName)
     end
 end
 
-function addon:BroadcastPlayerUpdate(targetName, delta, newValue, reason, txId, actor)
+function addon:BroadcastTransactionRecord(transaction, channel, targetName)
+    if type(transaction) ~= "table" then
+        return
+    end
+
     self:SendMessage(table.concat({
         "TX",
         "PLAYER",
-        txId,
-        trim(actor),
-        trim(targetName),
-        tostring(delta),
-        tostring(newValue),
-        trim(reason),
-    }, "\t"))
+        trim(transaction.txId),
+        trim(transaction.actor),
+        trim(transaction.target),
+        trim(transaction.opType),
+        tostring(safeNumber(transaction.delta, 0)),
+        tostring(safeNumber(transaction.desiredValue, 0)),
+        trim(transaction.expectedOldValue ~= nil and tostring(transaction.expectedOldValue) or ""),
+        trim(transaction.reason),
+        tostring(safeNumber(transaction.createdAt, time())),
+        tostring(safeNumber(transaction.actorSeq, 0)),
+        trim(transaction.resolvedTxId or ""),
+        trim(transaction.resolutionAction or ""),
+    }, "\t"), channel, targetName)
+end
+
+function addon:BroadcastConfigTransactionRecord(transaction, channel, targetName)
+    if type(transaction) ~= "table" then
+        return
+    end
+
+    self:SendMessage(table.concat({
+        "TX",
+        "CFG",
+        trim(transaction.txId),
+        trim(transaction.actor),
+        trim(transaction.target),
+        trim(transaction.opType),
+        tostring(safeNumber(transaction.value, 0)),
+        trim(transaction.label or ""),
+        trim(transaction.zone or ""),
+        tostring(safeNumber(transaction.encounterOrder, 999)),
+        trim(transaction.reason or ""),
+        tostring(safeNumber(transaction.createdAt, time())),
+        tostring(safeNumber(transaction.actorSeq, 0)),
+    }, "\t"), channel, targetName)
+end
+
+function addon:BroadcastPlayerUpdate(targetName, delta, newValue, reason, txId, actor)
+    local transaction = self:BuildPlayerTransaction("add", targetName, delta, newValue, reason, txId, actor, nil, time())
+    self:BroadcastTransactionRecord(transaction)
 end
 
 function addon:ApplyPlayerTransaction(targetName, delta, newValue, reason, txId, actor, silent)
-    if not self.guild then
-        return false
-    end
-
-    targetName = self:NormalizeName(targetName)
-    if not targetName or not txId or txId == "" then
-        return false
-    end
-
-    if self:HasSeenTransaction(txId) then
-        return false
-    end
-
-    local oldValue = self:GetPlayerDKP(targetName)
-    local resolvedValue = safeNumber(newValue, oldValue + safeNumber(delta, 0))
-    local appliedDelta = resolvedValue - oldValue
-    local playerData = self:EnsurePlayer(targetName)
-    if not playerData then
-        return false
-    end
-    playerData.dkp = math.floor(safeNumber(resolvedValue, 0) + 0.5)
-    if appliedDelta > 0 then
-        playerData.earned = safeNumber(playerData.earned, 0) + appliedDelta
-    elseif appliedDelta < 0 then
-        playerData.spent = safeNumber(playerData.spent, 0) + math.abs(appliedDelta)
-    end
-    playerData.updatedAt = time()
-    self:RegisterTransaction(txId)
-    self:NextRevision()
-    self:AppendHistory(string.format("%s -> %s (%+d) by %s [%s]", targetName, resolvedValue, appliedDelta, actor or "unknown", trim(reason)))
-    self:AppendActivity({
-        type = "PLAYER_TX",
-        actor = actor,
-        target = targetName,
-        delta = appliedDelta,
-        oldValue = oldValue,
-        newValue = resolvedValue,
-        reason = reason,
-        txId = txId,
-    })
-
-    if not silent then
-        self:Print(string.format("%s now has %d DKP (%+d).", targetName, resolvedValue, appliedDelta))
-    end
-
-    return true
+    local transaction = self:BuildPlayerTransaction("add", targetName, delta, newValue, reason, txId, actor, nil, time())
+    return self:ApplyTransactionRecord(transaction, silent, false)
 end
 
 function addon:AdjustPlayer(targetName, delta, reason)
@@ -3344,9 +4196,9 @@ function addon:AdjustPlayer(targetName, delta, reason)
     end
 
     local newValue = self:GetPlayerDKP(name) + amount
-    local txId = self:MakeTransactionId("ADD", name)
-    if self:ApplyPlayerTransaction(name, amount, newValue, reason or "Manual adjustment", txId, self:GetPlayerName(), true) then
-        self:BroadcastPlayerUpdate(name, amount, newValue, reason or "Manual adjustment", txId, self:GetPlayerName())
+    local transaction = self:BuildPlayerTransaction("add", name, amount, newValue, reason or "Manual adjustment", self:MakeTransactionId("ADD", name), self:GetPlayerName(), nil, time())
+    if self:ApplyTransactionRecord(transaction, true, false) then
+        self:BroadcastTransactionRecord(transaction)
         self:Print(string.format("Adjusted %s by %+d DKP. New total: %d.", name, amount, newValue))
     end
 end
@@ -3366,9 +4218,9 @@ function addon:SetPlayerDKP(targetName, value, reason)
 
     local currentValue = self:GetPlayerDKP(name)
     local delta = resolvedValue - currentValue
-    local txId = self:MakeTransactionId("SET", name)
-    if self:ApplyPlayerTransaction(name, delta, resolvedValue, reason or "Manual set", txId, self:GetPlayerName(), true) then
-        self:BroadcastPlayerUpdate(name, delta, resolvedValue, reason or "Manual set", txId, self:GetPlayerName())
+    local transaction = self:BuildPlayerTransaction("set", name, delta, resolvedValue, reason or "Manual set", self:MakeTransactionId("SET", name), self:GetPlayerName(), currentValue, time())
+    if self:ApplyTransactionRecord(transaction, true, false) then
+        self:BroadcastTransactionRecord(transaction)
         self:Print(string.format("Set %s to %d DKP.", name, resolvedValue))
     end
 end
@@ -3399,7 +4251,7 @@ function addon:ListStandings()
     end
 end
 
-function addon:SyncGuildRoster()
+function addon:SyncGuildRoster(skipRefresh)
     if not self.guild or not IsInGuild() then
         self.guildRosterMembers = {}
         self.playerGuildRankIndex = nil
@@ -3407,7 +4259,7 @@ function addon:SyncGuildRoster()
     end
 
     local refreshGuildRoster = GuildRoster or (C_GuildInfo and C_GuildInfo.GuildRoster)
-    if refreshGuildRoster then
+    if not skipRefresh and refreshGuildRoster then
         pcall(refreshGuildRoster)
     end
 
@@ -3693,15 +4545,12 @@ function addon:ConfigureBoss(npcId, amount, bossName)
     local existing = self.guild.bosses[npcId] or DEFAULT_BOSSES[npcId] or {}
     local zone = trim(existing.zone ~= nil and existing.zone or "Custom")
     local encounterOrder = safeNumber(existing.encounterOrder, 999)
-    self.guild.bosses[npcId] = {
-        name = bossName,
-        amount = amount,
-        zone = zone,
-        encounterOrder = encounterOrder,
-    }
-    self:NextRevision()
-    self:SendMessage(table.concat({ "CFG", "BOSS", npcId, tostring(amount), bossName, zone, tostring(encounterOrder) }, "\t"))
-    self:Print(string.format("Boss %s (%s) now awards %d DKP.", bossName, npcId, amount))
+    local transaction = self:BuildConfigTransaction("boss", npcId, amount, bossName, zone, encounterOrder, "Configured boss award", self:MakeTransactionId("CFGBOSS", npcId), self:GetPlayerName(), time())
+    if self:ApplyConfigTransactionRecord(transaction, true, false) then
+        self:BroadcastConfigTransactionRecord(transaction)
+        self:SendMessage(table.concat({ "CFG", "BOSS", trim(transaction.txId), npcId, tostring(amount), bossName, zone, tostring(encounterOrder) }, "\t"))
+        self:Print(string.format("Boss %s (%s) now awards %d DKP.", bossName, npcId, amount))
+    end
 end
 
 function addon:ListBosses()
@@ -4048,7 +4897,7 @@ function addon:SendSnapshot(targetName, requestId)
     self:SendMessage(table.concat({ "SNP", "BEGIN", snapshotId, tostring(self.guild.revision), senderName, target, tostring(self:GetNewMemberDefaultDkp()) }, "\t"))
 
     for playerName, info in pairs(self.guild.players) do
-        -- Include updatedAt so receivers can merge two raid datasets by timestamp.
+        -- Keep a state snapshot for bootstrap and recovery.
         self:SendMessage(table.concat({
             "SNP",
             "PLAYER",
@@ -4094,6 +4943,16 @@ function addon:SendSnapshot(targetName, requestId)
                 playerName,
             }, "\t"))
         end
+    end
+
+    for actorName, sequence in pairs(self:GetActorSequenceSummary()) do
+        self:SendMessage(table.concat({
+            "SNP",
+            "ACTOR",
+            snapshotId,
+            actorName,
+            tostring(sequence),
+        }, "\t"))
     end
 
     self:SendMessage(table.concat({ "SNP", "END", snapshotId, tostring(self.guild.revision), senderName }, "\t"))
@@ -4205,31 +5064,53 @@ function addon:HandleChatMessage(prefix, message, _, sender)
             requestId = nil
         end
 
-        -- Any member with a higher revision can respond, not just officers.
-        -- The revision number is the trust anchor: whoever has seen more
-        -- transactions wins and can propagate data to others who missed them.
-        if self.guild.revision > theirRevision then
+        -- Replay-based sync needs exchange even when revisions tie, otherwise
+        -- two isolated officers can both be "current" but still miss each
+        -- other's transactions.
+        if self.guild.revision >= theirRevision then
             self:SendSnapshot(senderName, requestId)
         end
         return
     end
 
+    if command == "TXREQ" then
+        local actorName = self:NormalizeName(parts[2])
+        local afterSequence = safeNumber(parts[3], 0)
+        if actorName then
+            self:SendTransactionsForActor(senderName, actorName, afterSequence)
+        end
+        return
+    end
+
     if command == "CFG" and parts[2] == "BOSS" then
-        local npcId = tostring(safeNumber(parts[3], 0))
+        local txId
+        local baseIndex = 3
+        if string.find(trim(parts[3]), ":", 1, true) then
+            txId = trim(parts[3])
+            baseIndex = 4
+        end
+        if txId ~= nil and self:HasSeenTransaction(txId) then
+            return
+        end
+
+        local npcId = tostring(safeNumber(parts[baseIndex], 0))
         if npcId ~= "0" then
             local existing = self.guild.bosses[npcId] or DEFAULT_BOSSES[npcId] or {}
-            local zone = trim(parts[6])
+            local zone = trim(parts[baseIndex + 3])
             if zone == "" then
                 zone = trim(existing.zone ~= nil and existing.zone or "Custom")
             end
 
-            local encounterOrder = safeNumber(parts[7], safeNumber(existing.encounterOrder, 999))
+            local encounterOrder = safeNumber(parts[baseIndex + 4], safeNumber(existing.encounterOrder, 999))
             self.guild.bosses[npcId] = {
-                amount = math.floor(safeNumber(parts[4], 0) + 0.5),
-                name = trim(parts[5]),
+                amount = math.floor(safeNumber(parts[baseIndex + 1], 0) + 0.5),
+                name = trim(parts[baseIndex + 2]),
                 zone = zone,
                 encounterOrder = encounterOrder,
             }
+            if txId ~= nil then
+                self:RegisterTransaction(txId)
+            end
             self:NextRevision()
         end
         return
@@ -4254,45 +5135,147 @@ function addon:HandleChatMessage(prefix, message, _, sender)
     end
 
     if command == "CFG" and parts[2] == "ADDRAIDER" then
-        local playerName = self:NormalizeName(parts[3])
+        local txId
+        local nameIndex = 3
+        if string.find(trim(parts[3]), ":", 1, true) then
+            txId = trim(parts[3])
+            nameIndex = 4
+        end
+        if txId ~= nil and self:HasSeenTransaction(txId) then
+            return
+        end
+
+        local playerName = self:NormalizeName(parts[nameIndex])
         if playerName then
             self:EnsurePlayer(playerName)
             self.guild.manualRaiders = self.guild.manualRaiders or {}
             self.guild.manualInactiveRaiders = self.guild.manualInactiveRaiders or {}
             self.guild.manualInactiveRaiders[playerName] = nil
             self.guild.manualRaiders[playerName] = true
+            if txId ~= nil then
+                self:RegisterTransaction(txId)
+            end
             self:NextRevision()
         end
         return
     end
 
     if command == "CFG" and parts[2] == "REMRAIDER" then
-        local playerName = self:NormalizeName(parts[3])
+        local txId
+        local nameIndex = 3
+        if string.find(trim(parts[3]), ":", 1, true) then
+            txId = trim(parts[3])
+            nameIndex = 4
+        end
+        if txId ~= nil and self:HasSeenTransaction(txId) then
+            return
+        end
+
+        local playerName = self:NormalizeName(parts[nameIndex])
         if playerName then
             self.guild.manualRaiders = self.guild.manualRaiders or {}
             self.guild.manualInactiveRaiders = self.guild.manualInactiveRaiders or {}
             self.guild.manualRaiders[playerName] = nil
             self.guild.manualInactiveRaiders[playerName] = true
+            if txId ~= nil then
+                self:RegisterTransaction(txId)
+            end
             self:NextRevision()
         end
         return
     end
 
     if command == "CFG" and parts[2] == "NEWMEMBERDKP" then
-        local value = math.floor(safeNumber(parts[3], 0) + 0.5)
+        local txId
+        local valueIndex = 3
+        if string.find(trim(parts[3]), ":", 1, true) then
+            txId = trim(parts[3])
+            valueIndex = 4
+        end
+        if txId ~= nil and self:HasSeenTransaction(txId) then
+            return
+        end
+
+        local value = math.floor(safeNumber(parts[valueIndex], 0) + 0.5)
         if value < 0 then
             value = 0
         end
         self.guild.newMemberDefaultDkp = value
+        if txId ~= nil then
+            self:RegisterTransaction(txId)
+        end
         self:NextRevision()
         return
     end
 
+    if command == "TX" and parts[2] == "CFG" then
+        local transaction = self:BuildConfigTransaction(
+            parts[6],
+            parts[5],
+            safeNumber(parts[7], 0),
+            parts[8],
+            parts[9],
+            safeNumber(parts[10], 999),
+            parts[11],
+            parts[3],
+            parts[4],
+            safeNumber(parts[12], time())
+        )
+        transaction.actorSeq = safeNumber(parts[13], safeNumber(transaction.actorSeq, 0))
+
+        if self:ApplyConfigTransactionRecord(transaction, true, true) then
+            self:RefreshHistoryFrame()
+            self:RefreshOptionsUI()
+        end
+        return
+    end
+
     if command == "TX" and parts[2] == "PLAYER" then
-        local applied = self:ApplyPlayerTransaction(parts[5], safeNumber(parts[6], 0), safeNumber(parts[7], 0), parts[8], parts[3], parts[4], true)
+        local transaction
+        local opType = trim(parts[6])
+        if opType == "set" or opType == "add" or opType == "sub" or opType == "delete" or opType == "resolve" then
+            local expectedOldValue = trim(parts[9])
+            if expectedOldValue == "" then
+                expectedOldValue = nil
+            else
+                expectedOldValue = safeNumber(expectedOldValue, nil)
+            end
+
+            transaction = self:BuildPlayerTransaction(
+                opType,
+                parts[5],
+                safeNumber(parts[7], 0),
+                safeNumber(parts[8], 0),
+                parts[10],
+                parts[3],
+                parts[4],
+                expectedOldValue,
+                safeNumber(parts[11], time())
+            )
+            transaction.actorSeq = safeNumber(parts[12], safeNumber(transaction.actorSeq, 0))
+            transaction.resolvedTxId = trim(parts[13])
+            transaction.resolutionAction = trim(parts[14])
+        else
+            transaction = self:BuildPlayerTransaction(
+                "add",
+                parts[5],
+                safeNumber(parts[6], 0),
+                safeNumber(parts[7], 0),
+                parts[8],
+                parts[3],
+                parts[4],
+                nil,
+                time()
+            )
+        end
+
+        local applied = self:ApplyTransactionRecord(transaction, true, true)
         if applied then
             self:RefreshLeaderUI()
             self:RefreshAuctionPopup()
+            self:RefreshHistoryFrame()
+            self:RefreshOptionsUI()
+        elseif self:GetConflictCount() > 0 then
             self:RefreshHistoryFrame()
             self:RefreshOptionsUI()
         end
@@ -4470,6 +5453,8 @@ function addon:HandleChatMessage(prefix, message, _, sender)
                 sender = senderName,
                 revision = revision,
                 players = {},
+                transactions = {},
+                actorSequences = {},
                 bosses = {},
                 manualRaiders = {},
                 manualInactiveRaiders = {},
@@ -4524,6 +5509,49 @@ function addon:HandleChatMessage(prefix, message, _, sender)
                 earned = math.floor(safeNumber(earnedAmount, 0) + 0.5),
                 spent = math.floor(safeNumber(spentAmount, 0) + 0.5),
             }
+            return
+        end
+
+        if snapshotCommand == "TX" then
+            local snapshotId = trim(parts[3])
+            if snapshotId ~= self.pendingSnapshot.id then
+                return
+            end
+
+            local expectedOldValue = trim(parts[10])
+            if expectedOldValue == "" then
+                expectedOldValue = nil
+            else
+                expectedOldValue = safeNumber(expectedOldValue, nil)
+            end
+
+            local transaction = self:BuildPlayerTransaction(
+                parts[7],
+                parts[6],
+                safeNumber(parts[8], 0),
+                safeNumber(parts[9], 0),
+                parts[11],
+                parts[4],
+                parts[5],
+                expectedOldValue,
+                safeNumber(parts[12], time())
+            )
+            transaction.actorSeq = safeNumber(parts[13], safeNumber(transaction.actorSeq, 0))
+            transaction.resolvedTxId = trim(parts[14])
+            transaction.resolutionAction = trim(parts[15])
+            self.pendingSnapshot.transactions[#self.pendingSnapshot.transactions + 1] = transaction
+            return
+        end
+
+        if snapshotCommand == "ACTOR" then
+            local snapshotId = trim(parts[3])
+            local actorName = self:NormalizeName(parts[4])
+            if snapshotId ~= self.pendingSnapshot.id then
+                return
+            end
+            if actorName then
+                self.pendingSnapshot.actorSequences[actorName] = safeNumber(parts[5], 0)
+            end
             return
         end
 
@@ -4603,14 +5631,21 @@ function addon:HandleChatMessage(prefix, message, _, sender)
                 return
             end
 
-            -- Always attempt a per-player merge so data from parallel raids
-            -- (e.g. two 10-man groups running on different nights) is combined
-            -- rather than overwritten. For each player, keep whichever record
-            -- has the more recent updatedAt timestamp.
             local mergedAny = false
+            local replayedPlayers = {}
+            for _, transaction in ipairs(self.pendingSnapshot.transactions or {}) do
+                replayedPlayers[trim(transaction.target)] = true
+                local applied = self:ApplyTransactionRecord(transaction, true, true)
+                if applied then
+                    mergedAny = true
+                end
+            end
+
+            -- Keep snapshot state as a bootstrap fallback for players that have
+            -- not yet been covered by replayed transactions.
             for playerName, incoming in pairs(self.pendingSnapshot.players) do
                 local existing = self.guild.players[playerName]
-                if not existing or safeNumber(incoming.updatedAt, 0) > safeNumber(existing.updatedAt, 0) then
+                if not replayedPlayers[playerName] and (not existing or safeNumber(incoming.updatedAt, 0) > safeNumber(existing.updatedAt, 0)) then
                     self.guild.players[playerName] = incoming
                     mergedAny = true
                 end
@@ -4629,6 +5664,12 @@ function addon:HandleChatMessage(prefix, message, _, sender)
 
             self.guild.knownTransactions = self.guild.knownTransactions or {}
             self.guild.knownTransactionsOrder = self.guild.knownTransactionsOrder or {}
+            for actorName, sequence in pairs(self.pendingSnapshot.actorSequences or {}) do
+                local normalizedActor = self:NormalizeName(actorName)
+                if normalizedActor and sequence > self:GetActorSequence(normalizedActor) then
+                    self.guild.actorSequences[normalizedActor] = safeNumber(sequence, 0)
+                end
+            end
 
             local snapshotSender = self.pendingSnapshot.sender or "unknown"
             if mergedAny then
@@ -4640,6 +5681,7 @@ function addon:HandleChatMessage(prefix, message, _, sender)
             self:RefreshAuctionPopup()
             self:RefreshHistoryFrame()
             self:RefreshOptionsUI()
+            self:SyncActorSequencesWithPeer(snapshotSender, self.pendingSnapshot.actorSequences or {})
             self.pendingSnapshot = nil
             return
         end
@@ -4998,7 +6040,7 @@ function addon:OnEvent(event, ...)
 
     if event == "PLAYER_GUILD_UPDATE" then
         self:EnsureDatabase()
-        self:SyncGuildRoster()
+        self:SyncGuildRoster(true)
         self:SyncTrackedGroupMembers()
 
         if C_Timer and C_Timer.After then
@@ -5013,7 +6055,7 @@ function addon:OnEvent(event, ...)
         if not self.guild then
             self:EnsureDatabase()
         end
-        self:SyncGuildRoster()
+        self:SyncGuildRoster(true)
         self:SyncTrackedGroupMembers()
 
         -- Guild online/offline changes are a good signal that a newer client may have
