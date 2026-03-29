@@ -80,6 +80,12 @@ Maple DKP is a lightweight World of Warcraft addon for Burning Crusade Classic s
 
 ## Recent patch notes
 
+- Boss award reliability and onboarding updates:
+  - raid members present at boss-kill award time are now auto-added to the active raider list if they were missing
+  - players with no DKP history are now auto-seeded to the current active-raider average before a kill award is applied
+  - newly seeded players receive a 10 DKP kill award for that event, while established raiders continue to receive the configured boss value
+  - award output now reports auto-added and auto-seeded counts for easier verification during raids
+  - non-configured boss-kill debug notices are now limited to test mode to avoid live-raid chat spam
 - Replay-based sync improvements:
   - player DKP changes are now stored as structured transactions with per-officer actor sequence tracking
   - snapshots now exchange compact actor-sequence summaries instead of replaying broad transaction dumps

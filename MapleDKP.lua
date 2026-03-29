@@ -3277,6 +3277,62 @@ function addon:TryAutoSeedDefaultDkp(name)
     return false
 end
 
+function addon:EnsureAwardEligibility(name)
+    if not self.guild then
+        return nil, 0, false, false
+    end
+
+    local playerData, normalizedName = self:EnsurePlayer(name)
+    if not playerData or not normalizedName then
+        return nil, 0, false, false
+    end
+
+    local autoAdded = false
+    self.guild.manualRaiders = self.guild.manualRaiders or {}
+    self.guild.manualInactiveRaiders = self.guild.manualInactiveRaiders or {}
+
+    if self.guild.manualRaiders[normalizedName] ~= true then
+        local configTx = self:BuildConfigTransaction(
+            "addraider",
+            normalizedName,
+            1,
+            "",
+            "",
+            0,
+            "Auto-added during boss award",
+            self:MakeTransactionId("CFGAUTOADD", normalizedName),
+            self:GetPlayerName(),
+            time()
+        )
+        if self:ApplyConfigTransactionRecord(configTx, true, false) then
+            self:BroadcastConfigTransactionRecord(configTx)
+            self:SendMessage(table.concat({ "CFG", "ADDRAIDER", trim(configTx.txId), normalizedName }, "\t"))
+            autoAdded = true
+        end
+    end
+
+    local hasHistory = safeNumber(playerData.dkp, 0) ~= 0 or safeNumber(playerData.earned, 0) ~= 0 or safeNumber(playerData.spent, 0) ~= 0
+    local seeded = false
+    local seededValue = 0
+    if not hasHistory then
+        local averageDkp, sourceCount = self:GetAverageActiveRaiderDkp(normalizedName)
+        if sourceCount <= 0 then
+            averageDkp = self:GetNewMemberDefaultDkp()
+        end
+
+        if averageDkp > 0 then
+            local seedTxId = self:MakeTransactionId("RAIDSEED", normalizedName)
+            if self:ApplyPlayerTransaction(normalizedName, averageDkp, averageDkp, "Auto baseline from active raiders", seedTxId, self:GetPlayerName(), true) then
+                self:BroadcastPlayerUpdate(normalizedName, averageDkp, averageDkp, "Auto baseline from active raiders", seedTxId, self:GetPlayerName())
+                seeded = true
+                seededValue = averageDkp
+            end
+        end
+    end
+
+    return normalizedName, seededValue, autoAdded, seeded
+end
+
 function addon:SetPlayerValue(name, newValue)
     local playerData = self:EnsurePlayer(name)
     if not playerData then
@@ -4512,19 +4568,43 @@ function addon:AwardRaid(amount, reason, sharedTxRoot)
     end
 
     local amountValue = math.floor(safeNumber(amount, 0) + 0.5)
+    local seededCount = 0
+    local autoAddedCount = 0
     for _, memberName in ipairs(raidMembers) do
+        local eligibleName, seededValue, autoAdded, seeded = self:EnsureAwardEligibility(memberName)
+        if eligibleName then
+            memberName = eligibleName
+            if autoAdded then
+                autoAddedCount = autoAddedCount + 1
+            end
+            if seeded then
+                seededCount = seededCount + 1
+            end
+        end
+
+        local awardAmountForMember = seeded and 10 or amountValue
         if sharedTxRoot and sharedTxRoot ~= "" then
             local txId = table.concat({ sharedTxRoot, memberName }, ":")
-            local newValue = self:GetPlayerDKP(memberName) + amountValue
-            if self:ApplyPlayerTransaction(memberName, amountValue, newValue, reason, txId, self:GetPlayerName(), true) then
-                self:BroadcastPlayerUpdate(memberName, amountValue, newValue, reason, txId, self:GetPlayerName())
+            local newValue = self:GetPlayerDKP(memberName) + awardAmountForMember
+            if self:ApplyPlayerTransaction(memberName, awardAmountForMember, newValue, reason, txId, self:GetPlayerName(), true) then
+                self:BroadcastPlayerUpdate(memberName, awardAmountForMember, newValue, reason, txId, self:GetPlayerName())
             end
         else
-            self:AdjustPlayer(memberName, amountValue, reason)
+            self:AdjustPlayer(memberName, awardAmountForMember, reason)
+        end
+
+        if seeded and seededValue > 0 then
+            self:Print(string.format("%s auto-seeded to %d DKP and awarded 10 DKP for the kill.", memberName, seededValue))
         end
     end
 
     self:Print(string.format("Awarded %d DKP to %d raid members.", amountValue, #raidMembers))
+    if autoAddedCount > 0 then
+        self:Print(string.format("Auto-added %d raid members to active raiders during award.", autoAddedCount))
+    end
+    if seededCount > 0 then
+        self:Print(string.format("Auto-seeded %d raid members with no prior DKP history.", seededCount))
+    end
 end
 
 function addon:ConfigureBoss(npcId, amount, bossName)
@@ -4988,6 +5068,9 @@ function addon:HandleBossKill(destGUID)
 
     local boss = self.guild.bosses[npcId]
     if not boss then
+        if self:IsTestMode() then
+            self:Print(string.format("Boss kill ignored: npcId %s is not configured in MapleDKP.", npcId))
+        end
         return
     end
 
