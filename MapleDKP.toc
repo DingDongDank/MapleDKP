@@ -2,7 +2,12 @@
 ## Title: Maple DKP
 ## Notes: Guild DKP tracker for Burning Crusade Classic style realms.
 ## Author: GitHub Copilot
-## Version: 0.1.0
+## Version: 1.1.5
 ## SavedVariables: MapleDKPDB
 
 MapleDKP.lua
+modules/transactions.lua
+modules/sync.lua
+modules/boss_awards.lua
+modules/auction.lua
+modules/commands.lua

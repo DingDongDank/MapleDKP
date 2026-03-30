@@ -78,7 +78,9 @@ Maple DKP is a lightweight World of Warcraft addon for Burning Crusade Classic s
 - Sync currently uses the guild addon channel only, which keeps usage simple but assumes guild raiders are online and running the addon.
 - Loot assignment still happens through the normal WoW loot window. The addon tells the officer who won but does not assign the item automatically.
 
-## Recent patch notes
+## Changelog
+
+### 1.1.7
 
 - Boss award reliability and onboarding updates:
   - raid members present at boss-kill award time are now auto-added to the active raider list if they were missing
@@ -99,6 +101,9 @@ Maple DKP is a lightweight World of Warcraft addon for Burning Crusade Classic s
   - boss, raider, and new-member-default config messages now include transaction IDs for deduplication during sync
 - Sync loop fix:
   - roster-driven sync no longer re-requests the guild roster from inside `GUILD_ROSTER_UPDATE`, which prevented repeated snapshot sends to the same officer while both clients remained online
+
+### 2.5.5
+
 - Members page layout now keeps all controls inside the window bounds.
 - Members list remains 3 columns and now fills top-to-bottom in each column before moving left-to-right.
 - Auction announcements now post to raid chat during bidding milestones:
