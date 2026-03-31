@@ -515,6 +515,41 @@ function addon:ApplyConfigTransactionRecord(transaction, silent, fromSync)
         return true
     end
 
+    if opType == "tracking" then
+        self.guild.trackingEnabled = safeNumber(transaction.value, 1) ~= 0
+        self:NextRevision()
+        self:AppendHistory(string.format("Raid DKP tracking %s by %s [%s]", self.guild.trackingEnabled and "enabled" or "disabled", transaction.actor or "unknown", trimText(transaction.reason)))
+        return true
+    end
+
+    if opType == "fullreset" then
+        local playerCount = 0
+        self.guild.players = self.guild.players or {}
+        for _, info in pairs(self.guild.players) do
+            info.dkp = 0
+            info.earned = 0
+            info.spent = 0
+            info.updatedAt = safeNumber(transaction.createdAt, time())
+            playerCount = playerCount + 1
+        end
+
+        self.guild.history = {}
+        self.guild.activityLog = {}
+        self.guild.conflicts = {}
+        self.guild.conflictOrder = {}
+        self.guild.resolvedTransactions = {}
+        self.ui.optionsSelectedConflictId = nil
+        self.activeAuction = nil
+        self.lastAuctionResult = "Auction cleared due to full DKP reset."
+        self:NextRevision()
+
+        if not silent then
+            self:Print(string.format("Full reset applied. %d player records set to 0 and history wiped.", playerCount), true)
+        end
+
+        return true
+    end
+
     return false
 end
 
@@ -663,6 +698,11 @@ function addon:AdjustPlayer(targetName, delta, reason)
         return
     end
 
+    if not self:IsTrackingEnabled() then
+        self:Print("Raid DKP tracking is disabled.")
+        return
+    end
+
     local name = self:NormalizeName(targetName)
     local amount = math.floor(safeNumber(delta, 0) + 0.5)
     if not name then
@@ -684,6 +724,11 @@ function addon:SetPlayerDKP(targetName, value, reason)
         return
     end
 
+    if not self:IsTrackingEnabled() then
+        self:Print("Raid DKP tracking is disabled.")
+        return
+    end
+
     local name = self:NormalizeName(targetName)
     local resolvedValue = math.floor(safeNumber(value, 0) + 0.5)
     if not name then
@@ -698,6 +743,42 @@ function addon:SetPlayerDKP(targetName, value, reason)
         self:BroadcastTransactionRecord(transaction)
         self:Print(string.format("Set %s to %d DKP.", name, resolvedValue))
     end
+end
+
+function addon:ExecuteFullDkpReset()
+    if not self:IsOfficer() then
+        self:Print("Only guild leaders and officers can run a full reset.")
+        return false
+    end
+
+    if not self.guild then
+        return false
+    end
+
+    local transaction = self:BuildConfigTransaction(
+        "fullreset",
+        "guild",
+        0,
+        "",
+        "",
+        0,
+        "Full reset from actions page",
+        self:MakeTransactionId("CFGFULLRESET", "guild"),
+        self:GetPlayerName(),
+        time()
+    )
+
+    if self:ApplyConfigTransactionRecord(transaction, true, false) then
+        self:BroadcastConfigTransactionRecord(transaction)
+        self:Print("Full reset complete. All player DKP was set to 0 and history was wiped.", true)
+        self:RefreshLeaderUI()
+        self:RefreshAuctionPopup()
+        self:RefreshRaidDkpPopup()
+        self:RefreshHistoryFrame()
+        return true
+    end
+
+    return false
 end
 
 function addon:ListStandings()

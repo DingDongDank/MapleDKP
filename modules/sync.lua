@@ -174,7 +174,8 @@ function addon:SendSnapshot(targetName, requestId)
     local senderName = self:GetPlayerName() or "unknown"
     local normalizedTarget = self:NormalizeName(targetName)
     local target = normalizedTarget or ""
-    self:SendMessage(table.concat({ "SNP", "BEGIN", snapshotId, tostring(self.guild.revision), senderName, target, tostring(self:GetNewMemberDefaultDkp()) }, "\t"))
+    local trackingValue = self:IsTrackingEnabled() and "1" or "0"
+    self:SendMessage(table.concat({ "SNP", "BEGIN", snapshotId, tostring(self.guild.revision), senderName, target, tostring(self:GetNewMemberDefaultDkp()), trackingValue }, "\t"))
 
     for playerName, info in pairs(self.guild.players) do
         self:SendMessage(table.concat({

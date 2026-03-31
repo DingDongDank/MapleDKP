@@ -111,6 +111,11 @@ function addon:StartAuctionFromInventory(minBid, searchText, duration)
         return false
     end
 
+    if not self:IsTrackingEnabled() then
+        self:Print("Raid DKP tracking is disabled.")
+        return false
+    end
+
     local itemLink = self:FindInventoryItemLink(searchText)
     if not itemLink then
         self:Print("No matching inventory item found. Use part of the item name or paste an item link.")
@@ -124,6 +129,11 @@ end
 
 function addon:SubmitAuctionBid()
     if not self.ui.initialized or not self.activeAuction then
+        return
+    end
+
+    if not self:IsTrackingEnabled() then
+        self.ui.auctionFrame.statusText:SetText("Raid DKP tracking is disabled.")
         return
     end
 
@@ -159,6 +169,10 @@ function addon:AnnounceAuctionStartToGroup(itemLink, minBid, duration, lootMaste
 end
 
 function addon:HandleWhisperBid(message, sender)
+    if not self:IsTrackingEnabled() then
+        return
+    end
+
     if not self.activeAuction or self.activeAuction.startedBy ~= self:GetPlayerName() then
         return
     end
@@ -190,6 +204,11 @@ end
 function addon:StartAuction(minBid, itemLink, duration)
     if not self:IsOfficer() then
         self:Print("Only guild leaders and officers can start auctions.")
+        return
+    end
+
+    if not self:IsTrackingEnabled() then
+        self:Print("Raid DKP tracking is disabled.")
         return
     end
 
@@ -245,6 +264,13 @@ function addon:StartAuction(minBid, itemLink, duration)
 end
 
 function addon:RegisterBid(bidder, amount, remote, auctionId)
+    if not self:IsTrackingEnabled() then
+        if not remote then
+            self:Print("Raid DKP tracking is disabled.")
+        end
+        return false
+    end
+
     bidder = self:NormalizeName(bidder)
     amount = math.floor(safeNumber(amount, 0) + 0.5)
 
@@ -376,6 +402,11 @@ end
 function addon:CloseAuction(preferredWinner)
     if not self:IsOfficer() then
         self:Print("Only guild leaders and officers can close auctions.")
+        return
+    end
+
+    if not self:IsTrackingEnabled() then
+        self:Print("Raid DKP tracking is disabled.")
         return
     end
 

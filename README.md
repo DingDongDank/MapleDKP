@@ -80,6 +80,44 @@ Maple DKP is a lightweight World of Warcraft addon for Burning Crusade Classic s
 
 ## Changelog
 
+### 1.1.9
+
+- Raid DKP tracking mode added with full command and UI support:
+  - new slash command `/mdkp tracking [on|off|toggle|status]`
+  - new tracking toggle and status text on the Options -> Actions page
+  - new live tracking status indicator in the Loot Control window
+- Tracking state is now synchronized and persisted across officers:
+  - tracking on/off now flows through config transactions (`tracking` op)
+  - legacy `CFG TRACKING` message handling added for compatibility
+  - snapshot begin payload now includes tracking state
+  - snapshot merge applies incoming tracking state when present
+  - guild database now defaults `trackingEnabled` to `true` when unset
+- Tracking disable now hard-stops DKP mutations across all major paths:
+  - raid-wide manual awards are blocked while tracking is off
+  - boss auto-awards are skipped while tracking is off
+  - manual DKP add/set operations are blocked while tracking is off
+  - auction start, bid submission/registration, whisper bid handling, and close are blocked while tracking is off
+  - incoming auction messages are ignored while tracking is off
+  - active auctions are cleared if tracking is turned off mid-run
+- Static data modularization to reduce core file size and centralize constants:
+  - default bosses, zone sort order, class-token map, class colors, and static defaults moved to `modules/static_data.lua`
+  - TOC load order updated so static data loads before core logic in both standard and TBC manifests
+  - `MapleDKP.lua` now consumes shared static data rather than embedding large constant tables
+- Additional codebase modularization to reduce `MapleDKP.lua` size and improve maintainability:
+  - state and identity helpers moved to `modules/core_state.lua`
+  - member/boss sorting and options selection helpers moved to `modules/data_views.lua`
+  - shared UI frame construction helpers moved to `modules/ui_frames.lua`
+  - options page refresh and tab logic moved to `modules/ui_pages.lua`
+  - runtime UI refresh/hooks (`OnUpdate`, auction popup, loot notice, item-link insertion hooks) moved to `modules/ui_runtime.lua`
+  - actions-page construction moved to `modules/ui_actions_page.lua`
+  - actions-page reset controls and reset confirmation popup moved to `modules/ui_actions_reset.lua`
+  - both TOC manifests were updated to load these modules in order after core initialization
+- Full-reset safeguards and controls added for officers:
+  - new `Full Reset...` button on Options -> Actions page
+  - confirmation popup requires typing `Confirm` exactly before reset is allowed
+  - full reset executes as a synced config transaction (`fullreset` op)
+  - operation sets all player DKP/earned/spent totals to 0, wipes history/activity/conflict logs, and clears active auction state
+
 ### 1.1.7
 
 - Boss award reliability and onboarding updates:

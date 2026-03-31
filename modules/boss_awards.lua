@@ -131,6 +131,10 @@ function addon:ProcessBossAward(encounterNpcId, awardSource)
         return false
     end
 
+    if not self:IsTrackingEnabled() then
+        return false
+    end
+
     local boss = self.guild.bosses[encounterNpcId]
     if not boss then
         if self:IsTestMode() then

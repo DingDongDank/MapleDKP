@@ -67,6 +67,7 @@ function addon:ShowHelp()
     self:Print("/mdkp auction status")
     self:Print("/mdkp sync")
     self:Print("/mdkp defaultdkp [Value|status]")
+    self:Print("/mdkp tracking [on|off|toggle|status]")
     self:Print("/mdkp quiet [on|off|toggle|status]")
     self:Print("/mdkp help")
     self:Print("/mdkp ui")
@@ -234,6 +235,28 @@ function addon:HandleSlashCommand(message)
         end
 
         self:SetNewMemberDefaultDkp(remainder)
+        return
+    end
+
+    if command == "tracking" then
+        local mode = string.lower(trimText(remainder))
+        if mode == "" or mode == "status" then
+            self:Print(self:IsTrackingEnabled() and "Raid DKP tracking is ON." or "Raid DKP tracking is OFF.", true)
+            return
+        end
+        if mode == "toggle" then
+            self:SetTrackingEnabled(not self:IsTrackingEnabled())
+            return
+        end
+        if mode == "on" then
+            self:SetTrackingEnabled(true)
+            return
+        end
+        if mode == "off" then
+            self:SetTrackingEnabled(false)
+            return
+        end
+        self:Print("Usage: /mdkp tracking [on|off|toggle|status]", true)
         return
     end
 
