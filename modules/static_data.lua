@@ -1,7 +1,7 @@
 MapleDKPStaticData = {
     defaultNewMemberDkp = 180,
     activeRaiderWindowSeconds = 30 * 24 * 60 * 60,
-    bossSchemaVersion = 3,
+    bossSchemaVersion = 4,
 
     defaultBosses = {
         ["15550"] = { name = "Attumen the Huntsman", amount = 10, zone = "Karazhan", encounterOrder = 1 },
@@ -37,6 +37,11 @@ MapleDKPStaticData = {
         ["23577"] = { name = "Halazzi the Lynx Lord", amount = 10, zone = "Zul'Aman", encounterOrder = 4 },
         ["24239"] = { name = "Hex Lord Malacrass", amount = 10, zone = "Zul'Aman", encounterOrder = 5 },
         ["23863"] = { name = "Zul'jin", amount = 20, zone = "Zul'Aman", encounterOrder = 6 },
+        ["17767"] = { name = "Rage Winterchill", amount = 10, zone = "Mount Hyjal", encounterOrder = 1 },
+        ["17808"] = { name = "Anetheron", amount = 10, zone = "Mount Hyjal", encounterOrder = 2 },
+        ["17888"] = { name = "Kaz'rogal", amount = 10, zone = "Mount Hyjal", encounterOrder = 3 },
+        ["17842"] = { name = "Azgalor", amount = 10, zone = "Mount Hyjal", encounterOrder = 4 },
+        ["17968"] = { name = "Archimonde", amount = 20, zone = "Mount Hyjal", encounterOrder = 5 },
         ["22887"] = { name = "High Warlord Naj'entus", amount = 10, zone = "Black Temple", encounterOrder = 1 },
         ["22898"] = { name = "Supremus", amount = 10, zone = "Black Temple", encounterOrder = 2 },
         ["22841"] = { name = "Shade of Akama", amount = 10, zone = "Black Temple", encounterOrder = 3 },
@@ -61,8 +66,9 @@ MapleDKPStaticData = {
         ["Serpentshrine Cavern"] = 4,
         ["Tempest Keep"] = 5,
         ["Zul'Aman"] = 6,
-        ["Black Temple"] = 7,
-        ["Sunwell Plateau"] = 8,
+        ["Mount Hyjal"] = 7,
+        ["Black Temple"] = 8,
+        ["Sunwell Plateau"] = 9,
         ["Custom"] = 100,
     },
 

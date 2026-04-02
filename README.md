@@ -80,6 +80,18 @@ Maple DKP is a lightweight World of Warcraft addon for Burning Crusade Classic s
 
 ## Changelog
 
+### 1.1.10
+
+- Mount Hyjal raid support added to the default boss catalog:
+  - Rage Winterchill
+  - Anetheron
+  - Kaz'rogal
+  - Azgalor
+  - Archimonde
+- The Bosses options page now shows Mount Hyjal in the default raid-zone list ordering.
+- Existing saved guild boss data now auto-migrates to include the new Mount Hyjal bosses on load.
+- Boss auto-awards now recognize Mount Hyjal encounters through both configured NPC IDs and encounter-name resolution.
+
 ### 1.1.9
 
 - Raid DKP tracking mode added with full command and UI support:

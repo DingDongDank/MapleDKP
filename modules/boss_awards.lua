@@ -36,6 +36,12 @@ local BOSS_KILL_NAME_ALIASES = {
     ["high king maulgar"] = "18831",
     ["gruul the dragonkiller"] = "19044",
     ["magtheridon"] = "17257",
+    ["rage winterchill"] = "17767",
+    ["anetheron"] = "17808",
+    ["kaz'rogal"] = "17888",
+    ["kazrogal"] = "17888",
+    ["azgalor"] = "17842",
+    ["archimonde"] = "17968",
 }
 
 local BOSS_KILL_COOLDOWN_SECONDS = 60
